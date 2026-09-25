@@ -2,7 +2,9 @@
 
 ## Lenguaje principal
 
-Python 3.13.
+Python 3.13 (versión del entorno en la Fase 0).
+
+Entorno actual (desde la Fase 2, en otro ordenador): `.venv` con **Python 3.14.6**. La suite pasa con esta versión.
 
 El proyecto se ejecutará utilizando un entorno virtual local situado en:
 
@@ -19,6 +21,61 @@ La API REST se desarrollará utilizando:
 * Pydantic
 
 FastAPI será responsable de exponer los endpoints HTTP y Pydantic de validar los datos de entrada y salida cuando sea necesario.
+
+### Decisiones aprobadas (Fase 2)
+
+Implementada en `inventory_app/api.py`. Arranque: `uvicorn inventory_app.api:app`.
+
+Endpoints:
+
+| Método y ruta | Entrada | Respuesta correcta |
+|---|---|---|
+| `GET /health` | — | 200 `{"status": "ok"}` (no lee el CSV) |
+| `GET /products` | — | 200, lista de productos |
+| `GET /products/low-stock` | — | 200, productos con `quantity <= min_stock` |
+| `GET /products/{name}` | nombre en la ruta | 200, producto |
+| `POST /products` | `{"name", "quantity", "unit", "min_stock"}` | 201, producto creado |
+| `POST /products/{name}/stock` | `{"change": n}` | 200, producto actualizado |
+
+* Cada producto se devuelve como `{"name", "quantity", "unit", "min_stock", "low_stock"}`.
+* `/products/low-stock` se declara antes que `/products/{name}`.
+* `change` es un entero estricto distinto de cero: positivo para entradas, negativo para salidas. No hay endpoint para fijar el stock absoluto, ni SKU, ni ID público.
+* El nombre de la ruta se busca sin distinguir mayúsculas y quitando los espacios exteriores. El cliente debe codificarlo en la URL.
+
+Reglas del nombre de producto (en `models.py`, así que también valen al leer el CSV):
+
+* De 1 a 100 caracteres tras quitar los espacios exteriores.
+* Sin espacios dobles.
+* Sin `/`. El servidor decodifica `%2F` antes de elegir ruta, así que un nombre con `/` nunca llegaría a `/products/{name}`.
+* `low-stock` está reservado (sin distinguir mayúsculas), porque coincide con la ruta de stock bajo.
+* La identidad no distingue mayúsculas; los acentos sí cuentan.
+
+Formato uniforme de error:
+
+```json
+{"code": "...", "message": "...", "details": {}}
+```
+
+| Situación | HTTP | `code` | `details` |
+|---|---|---|---|
+| `ProductNotFound` | 404 | `product_not_found` | `name` |
+| `ProductAlreadyExists` | 409 | `product_already_exists` | `name` |
+| `InsufficientStock` | 409 | `insufficient_stock` | `name`, `available`, `requested` |
+| `InvalidStockChange` (`change` igual a 0) | 422 | `invalid_stock_change` | — |
+| Entrada inválida (tipos, campos, JSON mal formado) | 422 | `validation_error` | `errors`: lista de `{field, message}` |
+| `StorageError` | 500 | `storage_error` | — |
+| Ruta inexistente | 404 | `not_found` | — |
+| Método no permitido | 405 | `method_not_allowed` | — (se conserva la cabecera `Allow`) |
+
+* Los errores 500 no exponen rutas ni detalles del sistema de archivos: el mensaje es genérico y el detalle se registra con `logging` (biblioteca estándar).
+* Cualquier otro error HTTP del enrutador usaría `http_error`. No debería producirse con los endpoints actuales.
+
+Diseño:
+
+* `create_app(service=None)` crea la aplicación y declara las rutas dentro de la función. Todos los endpoints usan el mismo `InventoryService` y, por tanto, el mismo repositorio y su `RLock`. Sin `service`, se construye a partir de `get_settings()`.
+* No se usan `APIRouter`, `Depends` ni `app.state`. Con 6 endpoints, declarar las rutas dentro de `create_app` es suficiente y tiene menos conceptos. Se decidió explícitamente por el carácter educativo del proyecto.
+* Crear la aplicación (y, por tanto, importar `api.py`) no lee el CSV; se lee al atender cada petición.
+* `api.py` no contiene lógica de negocio: valida la entrada con los modelos, llama al servicio y traduce los errores a HTTP.
 
 ## Agente de IA
 
@@ -168,7 +225,7 @@ La estructura exacta de archivos se decidirá durante la fase de arquitectura an
 
 `inventory_app/` es el paquete principal y `agent.py`, en la raíz, es el punto de entrada del agente.
 
-Estructura prevista (los archivos se crearán progresivamente en cada fase; ninguno existe todavía):
+Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 2 existen `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py` y `api.py`, además de `pytest.ini` en la raíz):
 
 ```text
 agent.py                     # Bucle del agente, historial en memoria y CLI de terminal
@@ -224,6 +281,12 @@ Las pruebas deberán incorporarse progresivamente junto con cada funcionalidad i
 * El agente se prueba con un `FakeLLM` de respuestas predefinidas, sin depender de Groq ni de la red.
 * Las pruebas usan archivos CSV temporales, nunca los de `data/`.
 
+Actualización (Fase 2):
+
+* Con la versión de Starlette instalada, `TestClient` se basa en `httpx2` (no en `httpx`). Por eso se instaló `httpx2==2.13.1` como dependencia de desarrollo.
+* `pytest.ini` con `pythonpath = .` permite ejecutar los tests con `pytest` además de con `python -m pytest`.
+* `conftest.py` mantiene la salvaguarda de sesión que falla si algún test modifica `data/inventory.csv`.
+
 ## Dependencias
 
 Las dependencias deberán mantenerse reducidas a las necesarias para el funcionamiento del proyecto.
@@ -245,10 +308,18 @@ Dependencias aprobadas y fase en la que se instalan (no se instalan antes de la 
 |---|---|---|
 | `python-dotenv` | Lectura de variables de entorno desde `.env` | 1 |
 | `pytest` | Pruebas automatizadas (desarrollo) | 1 |
-| `httpx` | Comunicación HTTP entre agente/herramientas y la API; requisito de `TestClient` | 3 |
+| `httpx` | Comunicación HTTP entre agente/herramientas y la API; requisito de `TestClient` | 3 (sustituida por `httpx2`, ver abajo) |
 | `groq` | Integración con la API de Groq | 5 |
 
-La Fase 2 no añade dependencias nuevas.
+Actualización (Fase 2): en la Fase 0 se preveía que la Fase 2 no añadiría dependencias, pero `TestClient` no funciona sin un cliente HTTP. La versión instalada de Starlette (1.7.0, que trae FastAPI 0.141.1) requiere `httpx2` y solo admite `httpx` como alternativa obsoleta. Decisión aprobada:
+
+* `httpx2==2.13.1` en `requirements-dev.txt`, solo para `TestClient`. No forma parte de la lógica del inventario.
+* En la Fase 3, cuando `InventoryApiClient` lo use en ejecución, se evaluará si pasa también a `requirements.txt`. No se instalará `httpx` ni otra librería HTTP alternativa.
+
+Estado actual de los archivos de dependencias:
+
+* `requirements.txt`: `fastapi==0.141.1`, `uvicorn==0.54.0`, `pydantic==2.13.5`, `python-dotenv==1.2.3`.
+* `requirements-dev.txt`: `-r requirements.txt`, `pytest==9.1.1`, `httpx2==2.13.1`.
 
 ## Configuración prevista
 

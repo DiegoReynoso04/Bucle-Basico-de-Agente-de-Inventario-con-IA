@@ -167,6 +167,7 @@ def test_invalid_numeric_values_raise_storage_error(repository, write_csv, row):
         "Leche,5,,5",  # unidad vacía
         "N" * 101 + ",5,unidades,5",  # nombre demasiado largo
         "Leche,5," + "u" * 31 + ",5",  # unidad demasiado larga
+        "Leche 1/2,5,unidades,5",  # nombre con "/" (las reglas de nombre se prueban en el modelo)
     ],
 )
 def test_invalid_text_values_raise_storage_error(repository, write_csv, row):

@@ -2,7 +2,9 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from inventory_app.api import create_app
 from inventory_app.config import DEFAULT_INVENTORY_CSV_PATH
 from inventory_app.models import Product
 from inventory_app.repository import CsvInventoryRepository
@@ -59,3 +61,9 @@ def sample_products() -> list[Product]:
 def service(repository: CsvInventoryRepository, sample_products) -> InventoryService:
     repository.save(sample_products)
     return InventoryService(repository)
+
+
+@pytest.fixture
+def client(service: InventoryService) -> TestClient:
+    """Cliente HTTP de una aplicación que usa el CSV temporal con `sample_products`."""
+    return TestClient(create_app(service))

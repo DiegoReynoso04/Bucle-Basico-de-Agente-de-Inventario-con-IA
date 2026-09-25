@@ -7,7 +7,7 @@ from inventory_app.errors import (
     ProductAlreadyExists,
     ProductNotFound,
 )
-from inventory_app.models import Product, ProductCreate
+from inventory_app.models import Product, ProductCreate, StockChange
 from inventory_app.repository import CsvInventoryRepository
 from inventory_app.service import InventoryService
 
@@ -120,6 +120,46 @@ def test_product_create_accepts_limits():
 
 def test_product_create_length_is_checked_after_stripping():
     assert ProductCreate(name=" " + "N" * 100 + " ", quantity=0, unit="u", min_stock=0)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Leche 1/2",
+        "Leche  de avena",
+        "low-stock",
+        "LOW-STOCK",
+        "  Low-Stock  ",
+    ],
+)
+def test_product_name_rejects_slash_double_spaces_and_reserved_name(name):
+    with pytest.raises(ValidationError):
+        ProductCreate(name=name, quantity=1, unit="unidades", min_stock=0)
+
+
+@pytest.mark.parametrize("name", ["low stock", "low-stock extra", "Leche de avena", "Té matcha 抹茶"])
+def test_product_name_accepts_similar_valid_names(name):
+    assert ProductCreate(name=name, quantity=1, unit="unidades", min_stock=0).name == name
+
+
+def test_product_name_rules_apply_after_stripping():
+    # Los espacios exteriores se eliminan: no cuentan como espacios dobles.
+    assert ProductCreate(name="  Leche  ", quantity=1, unit="u", min_stock=0).name == "Leche"
+
+
+# --- Modelo de movimiento de stock ---------------------------------------------
+
+
+@pytest.mark.parametrize("change", [10, -10, 0])
+def test_stock_change_accepts_integers(change):
+    # El 0 lo rechaza el servicio (InvalidStockChange), no el modelo.
+    assert StockChange(change=change).change == change
+
+
+@pytest.mark.parametrize("change", ["5", 1.5, True, None])
+def test_stock_change_rejects_non_integers(change):
+    with pytest.raises(ValidationError):
+        StockChange(change=change)
 
 
 # --- Ajustar stock ------------------------------------------------------------

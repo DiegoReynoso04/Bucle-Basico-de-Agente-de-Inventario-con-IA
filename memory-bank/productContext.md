@@ -16,7 +16,7 @@ A través del agente, Carla puede:
 
 ## Representación de un producto
 
-* **Nombre**: identifica al producto. "Leche de avena" y "leche de avena" son el mismo producto.
+* **Nombre**: identifica al producto. "Leche de avena" y "leche de avena" son el mismo producto; los acentos sí cuentan ("Cafe" y "Café" son distintos). Tiene de 1 a 100 caracteres (sin contar los espacios exteriores, que se eliminan), no puede contener espacios dobles ni `/`, y `low-stock` es un nombre reservado.
 * **Cantidad**: número entero, nunca negativo.
 * **Unidad**: cómo se cuenta el producto (unidades, bolsas, kg…).
 * **Stock mínimo**: umbral propio de cada producto.

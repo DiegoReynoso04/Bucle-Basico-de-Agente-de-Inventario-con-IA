@@ -2,42 +2,49 @@
 
 ## Trabajo actual
 
-Fase 1 (base y persistencia): **implementada y validada con pruebas**, pendiente de revisión por el usuario.
+Fase 2 (API FastAPI): **implementada y validada con pruebas**, pendiente de revisión del usuario y de commit.
 
-La Fase 2 no ha comenzado y solo comenzará cuando el usuario lo indique.
+La Fase 3 no ha comenzado y solo comenzará cuando el usuario lo indique.
 
-## Hecho recientemente (Fase 1)
+Rama de trabajo: `fase-1-base-persistencia`. La Fase 0 y la Fase 1 están en el commit `d465645`; los cambios de la Fase 2 todavía no tienen commit.
 
-* Instaladas en `.venv`: `python-dotenv` 1.2.3 y `pytest` 9.1.1.
-* Creados `requirements.txt`, `requirements-dev.txt` y `.env.example`; `.gitignore` ampliado con `.pytest_cache/`.
-* Creado el paquete `inventory_app/` con `config.py`, `models.py`, `errors.py`, `repository.py` y `service.py`.
-* Creado `data/inventory.csv` con 8 productos iniciales (3 en stock bajo).
-* Creados `tests/conftest.py`, `tests/test_repository.py` y `tests/test_service.py`: 92 tests, todos pasan.
+## Entorno
 
-## Decisiones tomadas durante la Fase 1
+El proyecto se trasladó a otro ordenador. Allí se creó un `.venv` nuevo con **Python 3.14.6** y se instaló `requirements-dev.txt`. La suite de la Fase 1 pasó sin cambios (92 tests) antes de empezar la Fase 2.
 
-* `INVENTORY_CSV_PATH` (opcional) permite cambiar la ruta del inventario; una ruta relativa se resuelve desde la raíz del proyecto. Por defecto: `data/inventory.csv`.
-* Enteros estrictos en los modelos: se rechazan booleanos, decimales y cadenas numéricas (`"10"`), en lugar de convertirlos.
-* El nombre solo se limpia de espacios exteriores (no se colapsan espacios internos ni se ignoran acentos). La identidad es `name.strip().casefold()`.
-* Error adicional `InvalidStockChange`: el ajuste de stock debe ser un entero distinto de cero.
-* El repositorio expone `load`, `save` y `update(mutate)`. `update` lee, aplica la mutación y escribe bajo el mismo `RLock`; si la mutación lanza una excepción, no se escribe nada.
-* Lectura con `utf-8-sig` (acepta UTF-8 con o sin BOM); escritura en UTF-8 sin BOM, fin de línea `\n`.
-* Un archivo vacío (0 bytes) o con solo la cabecera se trata como inventario vacío.
-* Las filas en blanco se ignoran. Los números deben ser solo dígitos ASCII (se rechazan `" 5"`, `"+5"`, `"2.5"`).
-* Los productos se devuelven en el orden en que están almacenados; los nuevos se añaden al final.
-* `conftest.py` incluye una salvaguarda de sesión que falla si algún test modifica `data/inventory.csv`.
+## Hecho recientemente (Fase 2)
+
+* `inventory_app/api.py`: aplicación FastAPI con 6 endpoints, creada con `create_app(service=None)`; `app = create_app()` para Uvicorn.
+* `inventory_app/models.py`: reglas nuevas del nombre de producto y modelo `StockChange`.
+* `pytest.ini` (`pythonpath = .`): ya se puede ejecutar `pytest` directamente.
+* `httpx2==2.13.1` añadido a `requirements-dev.txt` e instalado en `.venv` (lo usa `TestClient`).
+* `tests/conftest.py`: fixture `client`. `tests/test_api.py`: 27 tests de la API. Tests nuevos de las reglas de nombre y de `StockChange` en `tests/test_service.py`, y una fila nueva en `tests/test_repository.py`.
+* Suite completa: **137 passed** (92 de la Fase 1 + 45 nuevos), con `pytest` y con `python -m pytest`.
+
+## Decisiones tomadas durante la Fase 2
+
+* Endpoints: `GET /health`, `GET /products`, `GET /products/low-stock`, `GET /products/{name}`, `POST /products`, `POST /products/{name}/stock`. `/products/low-stock` se declara antes que `/products/{name}`.
+* Nombres de producto: de 1 a 100 caracteres tras quitar los espacios exteriores; sin espacios dobles; sin `/`; `low-stock` reservado (sin distinguir mayúsculas). La identidad sigue sin distinguir mayúsculas y los acentos siguen contando. Las reglas están en el modelo, así que también valen al leer el CSV.
+  * Motivo: el nombre viaja en la ruta. El servidor decodifica `%2F` antes de elegir ruta, así que un nombre con `/` no llegaría nunca a `/products/{name}`.
+* Stock: `{"change": n}`, con `n` entero estricto; positivo para entradas, negativo para salidas. El 0 lo rechaza el servicio (`invalid_stock_change`) y los tipos inválidos, Pydantic (`validation_error`).
+* No hay SKU, ni ID público, ni endpoint para fijar el stock absoluto.
+* Formato uniforme de error `{"code", "message", "details"}`, con los códigos descritos en `techContext.md`.
+* Los errores 500 (`storage_error`) devuelven un mensaje genérico. El detalle, que incluye rutas del sistema de archivos, solo se registra con `logging` (biblioteca estándar).
+* Arquitectura sencilla: las rutas se declaran dentro de `create_app`, que usa un único `InventoryService` (y un único repositorio con su `RLock`) por aplicación. **No se usan `APIRouter`, `Depends` ni `app.state`**: con 6 endpoints aportaban más conceptos que beneficio. Se decidió explícitamente para mantener el proyecto educativo.
+* Importar `api.py` no lee el CSV; se lee al atender cada petición.
+* Tests: se revisaron y simplificaron de 83 a 45 tests nuevos. Se quitaron los casos repetidos entre capas, un test de concurrencia que solo detectaba el fallo a veces y un test que repetía uno del repositorio. Las reglas se prueban caso a caso en el modelo y con un caso representativo por HTTP.
 
 ## Cuestiones abiertas
 
-* Los tests deben ejecutarse con `.venv/Scripts/python -m pytest`. Con `pytest` directamente falla la importación de `inventory_app`. Se propone añadir un `pytest.ini` mínimo (`pythonpath = .`), pendiente de aprobación.
-* Posible actualización de `techContext.md` con las decisiones de implementación de la Fase 1, pendiente de aprobación.
+* Revisión de la Fase 2 por el usuario y commit (no se hace sin su indicación).
 
 ## Decisiones pendientes (se cierran en su fase)
 
 | Decisión | Fase |
 |---|---|
-| Contrato definitivo de los endpoints (incluido cómo tratar nombres con `/` en la ruta) | 2 |
 | Lista definitiva de herramientas | 3 |
+| Si `httpx2` pasa también a `requirements.txt` (cuando lo use `InventoryApiClient` en ejecución) | 3 |
+| URL base de la API para el cliente (configuración) | 3 |
 | Formato exacto de las filas `tool` en `conversation_log.csv` | 4 |
 | Comportamiento ante fallo de escritura del log | 4 |
 | Integración con Groq: SDK o HTTP directo, y modelo concreto | 5 |
@@ -45,4 +52,4 @@ La Fase 2 no ha comenzado y solo comenzará cuando el usuario lo indique.
 
 ## Siguiente paso
 
-Revisión de la Fase 1 por el usuario. Después, la Fase 2 (API FastAPI) cuando el usuario lo indique.
+Revisión de la Fase 2 y commit por parte del usuario. Después, la Fase 3 (cliente HTTP de la API + herramientas) cuando el usuario lo indique.
