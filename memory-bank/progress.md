@@ -6,8 +6,8 @@
 |---|---|---|---|
 | 0 | Análisis y arquitectura | — | **Completada y aprobada** |
 | 1 | Base y persistencia | `python-dotenv`, `pytest` | **Completada** (commit `d465645`) |
-| 2 | API FastAPI | `httpx2` (solo desarrollo, para `TestClient`) | **Implementada y validada**; pendiente de revisión del usuario y de commit |
-| 3 | Cliente HTTP de la API + herramientas | ninguna prevista (`httpx2` ya instalado; decidir si pasa a `requirements.txt`) | Pendiente |
+| 2 | API FastAPI | `httpx2` (solo desarrollo, para `TestClient`) | **Completada** (commit `29d4357`) |
+| 3 | Cliente HTTP de la API + herramientas | ninguna (`httpx2` pasa de desarrollo a ejecución) | **Implementada y verificada**; pendiente de commit |
 | 4 | Conversation log (se crea `data/conversation_log.csv`) | — | Pendiente |
 | 5 | Integración con Groq (SDK o HTTP directo, a decidir) | a decidir | Pendiente |
 | 6 | Bucle del agente + CLI | — | Pendiente |
@@ -102,10 +102,61 @@ Verificaciones adicionales:
 * No quedan referencias a `APIRouter`, `Depends`, `get_service` ni `app.state`.
 * `pip check`: sin conflictos.
 
+## Fase 3: resultado
+
+Se implementó en dos partes (3A: cliente HTTP; 3B: herramientas), cada una revisada y aprobada por separado.
+
+Archivos creados:
+
+* `inventory_app/api_client.py`: `InventoryApiClient` con `list_products`, `get_low_stock`, `add_stock` y `remove_stock`.
+* `inventory_app/tools.py`: las 4 herramientas (`list_products`, `get_low_stock`, `add_stock`, `remove_stock`), que delegan en `InventoryApiClient`.
+* `tests/test_api_client.py` y `tests/test_tools.py`.
+
+Archivos modificados:
+
+* `requirements.txt`: + `httpx2==2.13.1` (pasa a ser dependencia de ejecución).
+* `requirements-dev.txt`: se quita la línea de `httpx2` (lo recibe a través de `-r requirements.txt`).
+
+No cambia ningún archivo de las Fases 1 y 2 (`api.py`, `service.py`, `repository.py`, `models.py`, `errors.py`, `config.py` ni sus tests).
+
+## Pruebas realizadas (Fase 3)
+
+Comandos: `pytest` y `python -m pytest` → **163 passed** (137 de las Fases 1 y 2 + 18 de `InventoryApiClient` + 8 de las herramientas).
+
+* `test_api_client.py` (18):
+  * Contra la API real con `TestClient`:
+    * Listar productos y consultar stock bajo.
+    * Añadir stock (cambio positivo) y retirar stock (cambio negativo), comprobando que se guarda.
+    * Nombre con espacios, Unicode, `?`, `#`, `%` y otras mayúsculas.
+    * Producto inexistente → `ProductNotFound`; stock insuficiente → `InsufficientStock` con sus datos.
+    * Error de almacenamiento → `StorageError` sin rutas internas.
+    * Ruta inexistente (nombre con `/`) → `InventoryError`, no `ProductNotFound`.
+  * Sin petición: cantidades `0` y negativas rechazadas en `add_stock` y `remove_stock` (4 casos).
+  * Con `httpx2.MockTransport`:
+    * Traducción de `product_already_exists`, `invalid_stock_change` y `validation_error`.
+    * Respuesta que no es de nuestra API (sin exponer su cuerpo).
+    * Error de conexión → `InventoryError`.
+* `test_tools.py` (8), con un cliente falso dentro del test:
+  * Cada herramienta llama al método correcto con los mismos argumentos (en `remove_stock`, la cantidad positiva) y devuelve el resultado del cliente.
+  * Cada herramienta deja pasar la excepción del cliente sin convertirla.
+
+Verificaciones adicionales:
+
+* `data/inventory.csv`: mismo hash antes y después de los tests y sin cambios respecto al commit de la Fase 2 (`29d4357`).
+* Pruebas de mutación en memoria (el proyecto no se modificó):
+  * No codificar `/`, `?`, `#` y `%` hace fallar el test del nombre Unicode.
+  * Traducir todo 404 a `ProductNotFound` hace fallar el test de ruta inexistente.
+* Revisión de imports:
+  * `tools.py` solo importa `InventoryApiClient`.
+  * `api_client.py` solo importa `urllib.parse.quote`, `httpx2` e `inventory_app.errors`.
+  * Ninguno importa el servicio, el repositorio ni FastAPI, ni accede al CSV.
+  * `tools.py` no tiene condicionales, bucles ni `try`, y no hay registro de herramientas.
+
 ## Problemas conocidos
 
 * `data/inventory.csv` se escribe con fin de línea `\n`. Con `core.autocrlf=true`, Git puede avisar de la conversión a CRLF; la lectura acepta ambos formatos.
-* Los cambios de la Fase 2 están pendientes de commit (se hará cuando lo indique el usuario).
+* Los cambios de la Fase 3 están pendientes de commit (se hará cuando lo indique el usuario).
+* La URL base de la API todavía no se puede configurar: no hay ninguna variable para ella. Queda pendiente para la integración del agente.
 * Si un CSV editado a mano contiene un nombre que incumple las nuevas reglas (por ejemplo, con `/`), la carga falla con `StorageError` (500 en la API). Es intencionado: se prefiere un error explícito a un producto al que no se puede acceder.
 * `data/conversation_log.csv` se versionará y el agente le añadirá filas en cada ejecución, así que cada sesión real generará cambios en Git. Es una consecuencia aceptada.
 * `server.py` ejecuta un servidor Flask al importarse y Flask no está instalado; no se usa en el proyecto (revisión en la Fase 8).

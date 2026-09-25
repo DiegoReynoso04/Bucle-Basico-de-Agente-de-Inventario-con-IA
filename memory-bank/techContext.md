@@ -187,7 +187,7 @@ La lista definitiva de herramientas y sus contratos se establecerá durante la f
 * Los errores de las herramientas (producto inexistente, stock insuficiente, argumentos inválidos, API no disponible) se devuelven al modelo como resultado estructurado, sin interrumpir el bucle.
 * El bucle del agente tiene un límite máximo de pasos (llamadas al modelo por mensaje del usuario) para evitar bucles infinitos.
 
-### Propuesta de herramientas (pendiente de confirmar en la Fase 3)
+### Propuesta de herramientas (Fase 0; la lista actual está en "Decisiones aprobadas (Fase 3)")
 
 | Herramienta | Operación de API propuesta |
 |---|---|
@@ -197,6 +197,48 @@ La lista definitiva de herramientas y sus contratos se establecerá durante la f
 | `add_stock` | `POST /products/{name}/stock` con `change` positivo |
 | `remove_stock` | `POST /products/{name}/stock` con `change` negativo |
 | `get_low_stock_products` | `GET /products/low-stock` |
+
+### Decisiones aprobadas (Fase 3)
+
+Cliente HTTP (`inventory_app/api_client.py`, clase `InventoryApiClient`):
+
+* Métodos: `list_products()`, `get_low_stock()`, `add_stock(name, quantity)` y `remove_stock(name, quantity)`.
+* Recibe un `httpx2.Client` ya configurado. En los tests se usa el `TestClient` de FastAPI (que es un `httpx2.Client`) y en producción se usará un `httpx2.Client(base_url=...)`. No hay una capa HTTP propia.
+* Es el único módulo que usa `httpx2`. No importa `InventoryService` ni `CsvInventoryRepository` y no accede al CSV. Solo importa `errors.py` para reutilizar sus excepciones.
+* El nombre del producto se codifica con `urllib.parse.quote(name, safe="")`. `httpx2` codifica los espacios y el Unicode, pero no `/`, `?`, `#` ni `%`, que romperían la ruta.
+* `quantity` debe ser un entero positivo (se rechazan también los booleanos). Si no lo es, lanza `InvalidStockChange` sin hacer ninguna petición. `add_stock` envía `change` positivo y `remove_stock` lo envía negativo: el signo lo fija el cliente.
+* Devuelve el JSON de la API tal cual (`dict` o lista de `dict`).
+* Traduce los errores según el `code` de la respuesta (no solo según el código HTTP), reutilizando las excepciones de `errors.py`:
+
+| `code` de la API | Excepción |
+|---|---|
+| `product_not_found` | `ProductNotFound` |
+| `product_already_exists` | `ProductAlreadyExists` |
+| `insufficient_stock` | `InsufficientStock` |
+| `invalid_stock_change`, `validation_error` | `InvalidStockChange` |
+| `storage_error` | `StorageError` (con el mensaje genérico de la API) |
+| `not_found`, `method_not_allowed`, otros | `InventoryError` |
+| Respuesta que no es de nuestra API | `InventoryError`, sin incluir el cuerpo de la respuesta |
+| Error de conexión (`httpx2.TransportError`) | `InventoryError("No se puede conectar con la API de inventario.")` |
+
+* `404 + not_found` (ruta inexistente) no se trata como producto inexistente. Con una URL base incorrecta, el agente propondría crear un producto que ya existe. Por eso, un nombre con `/` también da `InventoryError`.
+* El mensaje del error de conexión no incluye detalles de `httpx2`. El error original queda encadenado (`from exc`) y solo aparece en una traza completa de Python.
+
+Herramientas (`inventory_app/tools.py`):
+
+* Cuatro funciones de módulo: `list_products(client)`, `get_low_stock(client)`, `add_stock(client, name, quantity)` y `remove_stock(client, name, quantity)`.
+* Cada una llama a un solo método de `InventoryApiClient` y devuelve su resultado sin cambios. No contienen lógica de inventario ni HTTP.
+* Solo importan `InventoryApiClient`. No conocen FastAPI, el servicio, el repositorio ni el CSV.
+* No hay clase `Tool`, registro ni framework de herramientas.
+* No capturan excepciones: `ProductNotFound`, `InsufficientStock`, `InvalidStockChange`, `StorageError` e `InventoryError` llegan intactas a quien las llama.
+* Reciben la cantidad positiva. La conversión a cambio negativo de `remove_stock` la hace `InventoryApiClient`. Esto matiza la decisión de la Fase 0: el signo no lo decide el modelo, pero lo fija el cliente y no la herramienta.
+* No hay herramientas para consultar un producto concreto ni para crear productos.
+* Son funciones normales de Python, independientes de Groq. Convertirlas en definiciones que vea el modelo queda para la integración con el LLM.
+
+Pendiente (no decidido):
+
+* Dónde se convierten las excepciones de las herramientas en el resultado estructurado para el modelo que prevé la Fase 0. Se decidirá al implementar el bucle del agente.
+* La URL base de la API y su configuración. Se decidirá al integrar el agente; no existe todavía ninguna variable para ella.
 
 ## Arquitectura inicial
 
@@ -221,11 +263,32 @@ Agente
 
 La estructura exacta de archivos se decidirá durante la fase de arquitectura antes de implementar la aplicación.
 
+### Arquitectura implementada (tras la Fase 3)
+
+```text
+tools.py
+    ↓
+InventoryApiClient        (api_client.py; único módulo que usa httpx2)
+    ↓ HTTP
+FastAPI                   (api.py)
+    ↓
+InventoryService          (service.py)
+    ↓
+CsvInventoryRepository    (repository.py)
+    ↓
+data/inventory.csv
+```
+
+* `tools.py` no conoce FastAPI ni la persistencia.
+* `InventoryApiClient` es la única capa que usa `httpx2`.
+* El futuro agente accederá al inventario solo a través de las herramientas y el cliente HTTP. Nunca accede directamente al CSV ni importa el servicio o el repositorio.
+* Todavía no existen el agente (`agent.py`), la integración con Groq, el cliente del modelo (`LLMClient` / `llm.py`), los prompts ni el registro de conversaciones.
+
 ### Estructura aprobada (Fase 0)
 
 `inventory_app/` es el paquete principal y `agent.py`, en la raíz, es el punto de entrada del agente.
 
-Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 2 existen `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py` y `api.py`, además de `pytest.ini` en la raíz):
+Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 3 existen `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py`, `api.py`, `api_client.py` y `tools.py`, además de `pytest.ini` en la raíz):
 
 ```text
 agent.py                     # Bucle del agente, historial en memoria y CLI de terminal
@@ -287,6 +350,11 @@ Actualización (Fase 2):
 * `pytest.ini` con `pythonpath = .` permite ejecutar los tests con `pytest` además de con `python -m pytest`.
 * `conftest.py` mantiene la salvaguarda de sesión que falla si algún test modifica `data/inventory.csv`.
 
+Actualización (Fase 3):
+
+* `InventoryApiClient` se prueba contra la aplicación FastAPI real mediante `TestClient`, sin Uvicorn. Solo las respuestas que la API no puede producir con sus métodos (y los errores de conexión) se simulan con `httpx2.MockTransport`, que viene con `httpx2`.
+* Las herramientas se prueban con un cliente falso pequeño definido dentro del test. Solo se comprueba la delegación y la propagación de excepciones.
+
 ## Dependencias
 
 Las dependencias deberán mantenerse reducidas a las necesarias para el funcionamiento del proyecto.
@@ -316,10 +384,12 @@ Actualización (Fase 2): en la Fase 0 se preveía que la Fase 2 no añadiría de
 * `httpx2==2.13.1` en `requirements-dev.txt`, solo para `TestClient`. No forma parte de la lógica del inventario.
 * En la Fase 3, cuando `InventoryApiClient` lo use en ejecución, se evaluará si pasa también a `requirements.txt`. No se instalará `httpx` ni otra librería HTTP alternativa.
 
-Estado actual de los archivos de dependencias:
+Actualización (Fase 3): `httpx2==2.13.1` pasa de dependencia de desarrollo a dependencia de ejecución, porque ahora `InventoryApiClient` lo usa para hablar con la API. Se quita de `requirements-dev.txt`, que lo recibe a través de `-r requirements.txt`. No se añadió ninguna otra dependencia.
 
-* `requirements.txt`: `fastapi==0.141.1`, `uvicorn==0.54.0`, `pydantic==2.13.5`, `python-dotenv==1.2.3`.
-* `requirements-dev.txt`: `-r requirements.txt`, `pytest==9.1.1`, `httpx2==2.13.1`.
+Estado actual de los archivos de dependencias (tras la Fase 3):
+
+* `requirements.txt`: `fastapi==0.141.1`, `uvicorn==0.54.0`, `pydantic==2.13.5`, `python-dotenv==1.2.3`, `httpx2==2.13.1`.
+* `requirements-dev.txt`: `-r requirements.txt`, `pytest==9.1.1`.
 
 ## Configuración prevista
 
