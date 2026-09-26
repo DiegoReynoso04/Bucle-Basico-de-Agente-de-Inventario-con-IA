@@ -154,6 +154,34 @@ actor,message,tool_call,timestamp
 
 * Append-only: solo se añaden filas; nunca se sobrescribe ni se reescribe.
 
+### Decisiones aprobadas (Fase 4): registro de conversaciones
+
+Implementado en `inventory_app/conversation_log.py`:
+
+* Una clase `ConversationLogger(path)` con un único método: `log(actor, message, tool_call="")`. Solo usa la biblioteca estándar (`csv`, `datetime`, `pathlib`).
+* La ruta es obligatoria; no hay ruta por defecto ni variable de entorno. El agente le pasará `data/conversation_log.csv` cuando se implemente.
+* Crear el logger no crea el archivo. El primer `log` crea el archivo y su directorio si no existen.
+* Solo añade (append): el archivo se abre en modo `"a+"`, que permite leer la primera línea y escribe siempre al final. Nunca se reescriben las filas anteriores.
+* Cabecera:
+  * Si el archivo no existe o está vacío, se escribe `actor,message,tool_call,timestamp` antes de la primera fila, así que nunca se duplica.
+  * Si ya tiene contenido, su primera línea debe ser exactamente `actor,message,tool_call,timestamp` seguida de salto de línea. Si no lo es, se lanza `ValueError` con un mensaje claro y el archivo no se modifica: no se repara ni se sobrescribe.
+* UTF-8 sin BOM y fin de línea `\n`, igual que `inventory.csv`. `csv.writer` escapa comas, comillas y saltos de línea.
+* Validación del evento (formato, no reglas del agente):
+  * `actor` debe ser `user`, `agent` o `tool` (`ValueError`).
+  * `message` y `tool_call` deben ser texto (`str`), sin convertir otros tipos (`TypeError`). Pueden estar vacíos.
+  * `tool_call` **no** es obligatorio para `actor="tool"`: el logger no impone cómo lo usará el agente.
+  * Si la validación falla, no se toca el archivo.
+* El formato interno de `tool_call` queda deliberadamente abierto: el logger guarda el texto que reciba.
+* Los errores de escritura (`OSError`) se propagan a quien llama a `log`; no se ocultan ni se convierten en éxito.
+* `timestamp`: lo genera el logger con `datetime.now().astimezone().isoformat(timespec="seconds")`. Es la hora local con su desfase horario (por ejemplo `2026-09-25T21:30:00+02:00`): ISO 8601 y con zona horaria explícita.
+* No mantiene memoria de la conversación: la memoria completa de la sesión será responsabilidad del futuro agente. No conoce FastAPI, el servicio, el cliente HTTP, las herramientas ni Groq.
+* No hay bloqueo entre hilos ni procesos: el agente escribe los eventos uno tras otro.
+
+Pendiente para la Fase 6 (depende del agente):
+
+* El formato concreto de `tool_call` (por ejemplo, solo el nombre de la herramienta o también sus argumentos) y qué texto lleva `message` en cada tipo de fila.
+* Cómo maneja el agente un fallo al escribir el log (`OSError` o cabecera inválida), incluido cómo se transforman esos errores para el agente o el LLM.
+
 Comportamiento previsto de la persistencia (propuesto en Fase 0, se validará con pruebas en la Fase 1):
 
 * Si el archivo de inventario no existe, se considera inventario vacío y se crea con cabecera en la primera escritura.
@@ -282,13 +310,14 @@ data/inventory.csv
 * `tools.py` no conoce FastAPI ni la persistencia.
 * `InventoryApiClient` es la única capa que usa `httpx2`.
 * El futuro agente accederá al inventario solo a través de las herramientas y el cliente HTTP. Nunca accede directamente al CSV ni importa el servicio o el repositorio.
-* Todavía no existen el agente (`agent.py`), la integración con Groq, el cliente del modelo (`LLMClient` / `llm.py`), los prompts ni el registro de conversaciones.
+* Todavía no existen el agente (`agent.py`), la integración con Groq, el cliente del modelo (`LLMClient` / `llm.py`) ni los prompts.
+* El registro de conversaciones (`conversation_log.py`, Fase 4) es un componente aislado. Lo usará el agente, pero no depende de ninguna otra capa.
 
 ### Estructura aprobada (Fase 0)
 
 `inventory_app/` es el paquete principal y `agent.py`, en la raíz, es el punto de entrada del agente.
 
-Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 3 existen `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py`, `api.py`, `api_client.py` y `tools.py`, además de `pytest.ini` en la raíz):
+Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 4 existen `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py`, `api.py`, `api_client.py`, `tools.py` y `conversation_log.py`, además de `pytest.ini` en la raíz; `data/conversation_log.csv` se creará con el primer evento real):
 
 ```text
 agent.py                     # Bucle del agente, historial en memoria y CLI de terminal

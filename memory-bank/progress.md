@@ -7,8 +7,8 @@
 | 0 | Análisis y arquitectura | — | **Completada y aprobada** |
 | 1 | Base y persistencia | `python-dotenv`, `pytest` | **Completada** (commit `d465645`) |
 | 2 | API FastAPI | `httpx2` (solo desarrollo, para `TestClient`) | **Completada** (commit `29d4357`) |
-| 3 | Cliente HTTP de la API + herramientas | ninguna (`httpx2` pasa de desarrollo a ejecución) | **Implementada y verificada**; pendiente de commit |
-| 4 | Conversation log (se crea `data/conversation_log.csv`) | — | Pendiente |
+| 3 | Cliente HTTP de la API + herramientas | ninguna (`httpx2` pasa de desarrollo a ejecución) | **Completada** (commit `00cbe7d`) |
+| 4 | Conversation log (se crea `data/conversation_log.csv`) | ninguna | **Implementada, probada y aprobada**; pendiente de commit |
 | 5 | Integración con Groq (SDK o HTTP directo, a decidir) | a decidir | Pendiente |
 | 6 | Bucle del agente + CLI | — | Pendiente |
 | 7 | E2E + pruebas reales con Groq | — | Pendiente |
@@ -152,10 +152,46 @@ Verificaciones adicionales:
   * Ninguno importa el servicio, el repositorio ni FastAPI, ni accede al CSV.
   * `tools.py` no tiene condicionales, bucles ni `try`, y no hay registro de herramientas.
 
+## Fase 4: resultado
+
+Archivos creados:
+
+* `inventory_app/conversation_log.py`: `ConversationLogger(path)` con `log(actor, message, tool_call="")`.
+* `tests/test_conversation_log.py`.
+
+No cambia ningún archivo existente ni las dependencias. `data/conversation_log.csv` todavía no existe: se creará con el primer evento que registre el agente.
+
+Tras la revisión del usuario se ajustó el diseño:
+
+* Se quitó la regla que exigía `tool_call` en los eventos `tool`: el logger valida el formato del evento, no cómo lo usará el agente.
+* Se añadió la validación de la cabecera de un archivo existente.
+* El formato interno de `tool_call` y el manejo de errores de escritura quedan para el agente.
+
+## Pruebas realizadas (Fase 4)
+
+Comandos: `pytest` y `python -m pytest` → **181 passed** (163 de las Fases 1–3 + 18 del registro).
+
+* `test_conversation_log.py` (18), sobre un archivo temporal:
+  * El primer evento crea el archivo (y su directorio) con la cabecera exacta.
+  * Registro de eventos `user`, `agent` y `tool`; el evento `tool` se registra con y sin `tool_call`.
+  * Los eventos nuevos conservan los anteriores, también desde otra instancia del logger, y la cabecera aparece una sola vez.
+  * Comas, comillas y saltos de línea se escapan y se leen igual.
+  * UTF-8 (acentos, `ñ`, caracteres chinos, emoji) sin BOM.
+  * Se rechazan actores inválidos (`system`, `User`, vacío) y valores que no son texto; en esos casos no se crea el archivo.
+  * Un archivo existente cuya primera línea no es exactamente la cabecera se rechaza con `ValueError` y queda byte a byte igual. Casos probados: otro CSV, una columna menos, cabecera sin salto de línea y datos sin cabecera.
+  * El timestamp es ISO 8601, tiene zona horaria y está entre la hora anterior y la posterior al registro.
+* La propagación de `OSError` no tiene test propio (decisión del usuario): el logger no captura excepciones de escritura.
+
+Verificaciones adicionales:
+
+* `data/inventory.csv`: mismo hash antes y después de los tests.
+* `data/conversation_log.csv` real: los tests no lo crean ni lo modifican. El logger exige una ruta explícita y los tests usan `tmp_path`.
+* `conversation_log.py` solo importa `csv`, `datetime` y `pathlib`.
+
 ## Problemas conocidos
 
 * `data/inventory.csv` se escribe con fin de línea `\n`. Con `core.autocrlf=true`, Git puede avisar de la conversión a CRLF; la lectura acepta ambos formatos.
-* Los cambios de la Fase 3 están pendientes de commit (se hará cuando lo indique el usuario).
+* Los cambios de la Fase 4 están pendientes de commit (se hará cuando lo indique el usuario).
 * La URL base de la API todavía no se puede configurar: no hay ninguna variable para ella. Queda pendiente para la integración del agente.
 * Si un CSV editado a mano contiene un nombre que incumple las nuevas reglas (por ejemplo, con `/`), la carga falla con `StorageError` (500 en la API). Es intencionado: se prefiere un error explícito a un producto al que no se puede acceder.
 * `data/conversation_log.csv` se versionará y el agente le añadirá filas en cada ejecución, así que cada sesión real generará cambios en Git. Es una consecuencia aceptada.
