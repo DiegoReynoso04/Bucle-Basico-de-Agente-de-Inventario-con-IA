@@ -11,6 +11,7 @@ from inventory_app import tools
 from inventory_app.errors import (
     InsufficientStock,
     InventoryError,
+    ProductAlreadyExists,
     ProductNotFound,
     StorageError,
 )
@@ -42,6 +43,9 @@ class FakeApiClient:
     def remove_stock(self, name, quantity):
         return self._call("remove_stock", name, quantity)
 
+    def create_product(self, name, quantity, unit, min_stock):
+        return self._call("create_product", name, quantity, unit, min_stock)
+
 
 @pytest.mark.parametrize(
     ("tool", "args", "expected_call"),
@@ -51,6 +55,11 @@ class FakeApiClient:
         (tools.add_stock, ("Leche de avena", 30), ("add_stock", "Leche de avena", 30)),
         # La cantidad llega positiva: el signo de la salida lo pone el cliente, no la herramienta.
         (tools.remove_stock, ("Café arábica", 12), ("remove_stock", "Café arábica", 12)),
+        (
+            tools.create_product,
+            ("Leche entera", 48, "unidades", 24),
+            ("create_product", "Leche entera", 48, "unidades", 24),
+        ),
     ],
 )
 def test_tool_delegates_to_client(tool, args, expected_call):
@@ -69,6 +78,11 @@ def test_tool_delegates_to_client(tool, args, expected_call):
         (tools.get_low_stock, (), InventoryError("No se puede conectar con la API de inventario.")),
         (tools.add_stock, ("Leche de almendras", 5), ProductNotFound("Leche de almendras")),
         (tools.remove_stock, ("Jarabe de vainilla", 5), InsufficientStock("Jarabe de vainilla", 4, 5)),
+        (
+            tools.create_product,
+            ("Leche de avena", 1, "unidades", 0),
+            ProductAlreadyExists("Leche de avena"),
+        ),
     ],
 )
 def test_tool_lets_client_errors_through(tool, args, error):

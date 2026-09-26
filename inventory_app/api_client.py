@@ -39,6 +39,11 @@ class InventoryApiClient:
         """Registra una salida: envía `quantity` como cambio negativo."""
         return self._change_stock(name, -_check_quantity(quantity))
 
+    def create_product(self, name: str, quantity: int, unit: str, min_stock: int) -> dict:
+        """Registra un producto nuevo. Los datos los valida la API."""
+        data = {"name": name, "quantity": quantity, "unit": unit, "min_stock": min_stock}
+        return self._request("POST", "/products", json=data)
+
     def _change_stock(self, name: str, change: int) -> dict:
         # safe="": también se codifican "/", "?", "#" y "%", que de otro modo
         # cambiarían la ruta o cortarían la URL.
@@ -80,8 +85,13 @@ def _error_from_response(response: httpx2.Response) -> InventoryError:
         return ProductAlreadyExists(details["name"])
     if code == "insufficient_stock":
         return InsufficientStock(details["name"], details["available"], details["requested"])
-    if code in ("invalid_stock_change", "validation_error"):
+    if code == "invalid_stock_change":
         return InvalidStockChange(message)
+    if code == "validation_error":
+        # Datos rechazados por la API (por ejemplo, un nombre con "/" al crear un
+        # producto): se incluyen los motivos para que se puedan corregir.
+        reasons = "; ".join(f"{e['field']}: {e['message']}" for e in details.get("errors", []))
+        return InventoryError(f"{message} {reasons}".strip())
     if code == "storage_error":
         # El mensaje de la API ya es genérico: no contiene rutas internas.
         return StorageError(message)

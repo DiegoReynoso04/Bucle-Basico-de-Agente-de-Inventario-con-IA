@@ -251,7 +251,7 @@ Implementado en `inventory_app/conversation_log.py`:
 * No mantiene memoria de la conversación: la memoria completa de la sesión será responsabilidad del futuro agente. No conoce FastAPI, el servicio, el cliente HTTP, las herramientas ni Groq.
 * No hay bloqueo entre hilos ni procesos: el agente escribe los eventos uno tras otro.
 
-Pendiente para la Fase 6 (depende del agente):
+Pendiente para la Fase 6 (depende del agente), **resuelto en la Fase 6** (ver "Decisiones aprobadas (Fase 6)"):
 
 * El formato concreto de `tool_call` (por ejemplo, solo el nombre de la herramienta o también sus argumentos) y qué texto lleva `message` en cada tipo de fila.
 * Cómo maneja el agente un fallo al escribir el log (`OSError` o cabecera inválida), incluido cómo se transforman esos errores para el agente o el LLM.
@@ -317,7 +317,8 @@ Cliente HTTP (`inventory_app/api_client.py`, clase `InventoryApiClient`):
 | `product_not_found` | `ProductNotFound` |
 | `product_already_exists` | `ProductAlreadyExists` |
 | `insufficient_stock` | `InsufficientStock` |
-| `invalid_stock_change`, `validation_error` | `InvalidStockChange` |
+| `invalid_stock_change` | `InvalidStockChange` |
+| `validation_error` | `InventoryError` con los motivos de la API (desde la Fase 6; antes `InvalidStockChange`) |
 | `storage_error` | `StorageError` (con el mensaje genérico de la API) |
 | `not_found`, `method_not_allowed`, otros | `InventoryError` |
 | Respuesta que no es de nuestra API | `InventoryError`, sin incluir el cuerpo de la respuesta |
@@ -334,13 +335,65 @@ Herramientas (`inventory_app/tools.py`):
 * No hay clase `Tool`, registro ni framework de herramientas.
 * No capturan excepciones: `ProductNotFound`, `InsufficientStock`, `InvalidStockChange`, `StorageError` e `InventoryError` llegan intactas a quien las llama.
 * Reciben la cantidad positiva. La conversión a cambio negativo de `remove_stock` la hace `InventoryApiClient`. Esto matiza la decisión de la Fase 0: el signo no lo decide el modelo, pero lo fija el cliente y no la herramienta.
-* No hay herramientas para consultar un producto concreto ni para crear productos.
+* No hay herramientas para consultar un producto concreto ni para crear productos (en la Fase 6 se añadió `create_product`; ver abajo).
 * Son funciones normales de Python, independientes de Groq. Convertirlas en definiciones que vea el modelo queda para la integración con el LLM.
 
-Pendiente (no decidido):
+Pendiente (no decidido), **resuelto en la Fase 6**:
 
-* Dónde se convierten las excepciones de las herramientas en el resultado estructurado para el modelo que prevé la Fase 0. Se decidirá al implementar el bucle del agente.
-* La URL base de la API y su configuración. Se decidirá al integrar el agente; no existe todavía ninguna variable para ella.
+* Dónde se convierten las excepciones de las herramientas en el resultado estructurado para el modelo que prevé la Fase 0: en `run_tool()` de `agent.py`.
+* La URL base de la API y su configuración: variable `INVENTORY_API_URL` en `config.py`.
+
+### Decisiones aprobadas (Fase 6): agente
+
+Cambios en las capas anteriores (solo lo necesario):
+
+* **Quinta herramienta `create_product`**, porque registrar productos es un requisito funcional (`productContext.md`) y `POST /products` ya existía. Se añadió `InventoryApiClient.create_product(name, quantity, unit, min_stock)`, que valida en la API, y `tools.create_product(client, name, quantity, unit, min_stock)`. El contrato de la API no cambia.
+* **Cambio en la traducción de errores del cliente:** `validation_error` ya no da `InvalidStockChange` sino `InventoryError` con los motivos de la API (por ejemplo, `body.name: Value error, el nombre no puede contener '/'`). Con `create_product`, un dato inválido no es un "cambio de stock inválido". En los métodos de stock no cambia nada en la práctica, porque el cliente valida la cantidad antes de enviar. `invalid_stock_change` sigue dando `InvalidStockChange`.
+* **`config.py`:** `Settings.inventory_api_url`, leída de `INVENTORY_API_URL` (entorno o `.env`), con valor por defecto `http://127.0.0.1:8000`. Está documentada en `.env.example`.
+
+`agent.py` (en la raíz), sin clases, legible de arriba abajo:
+
+* Constantes:
+  * `LOG_PATH` (`data/conversation_log.csv`).
+  * `MAX_STEPS = 8`.
+  * `SYSTEM_PROMPT`, dentro de `agent.py`: no se creó `prompts.py`, que estaba previsto en la estructura de la Fase 0.
+  * `TOOL_DEFINITIONS`: las 5 herramientas en formato de Groq, con JSON Schema, `required` y `additionalProperties: false`.
+  * `TOOL_PARAMETERS`: los argumentos de cada herramienta, derivados de las definiciones.
+  * `LIMIT_REPLY`.
+* `run_tool(client, name, arguments) -> dict`:
+  * Valida de forma explícita: la herramienta debe existir (`UnknownTool`) y los argumentos deben ser exactamente los de su definición (`InvalidArguments`). Así, argumentos que faltan, que sobran o como `{"": {}}` se rechazan y no se ignoran.
+  * Ejecuta la función de `tools.py` con un `if` por herramienta.
+  * Devuelve `{"result": ...}` o `{"error": {"type", "message"}}`. `type` es el nombre de la excepción (`InsufficientStock`, `ProductNotFound`...), o `InvalidArguments` si falla con `TypeError`.
+  * Nunca lanza por un error de herramienta. La cantidad se pasa tal cual: el agente no cambia el signo.
+* `handle_message(text, messages, llm, client, logger) -> str`, el bucle:
+  1. Registra `user` y añade el mensaje al historial.
+  2. Hasta `MAX_STEPS` veces: llama a `llm.complete(messages, TOOL_DEFINITIONS)` y añade `response["message"]` al historial.
+     * Sin `tool_calls`: registra `agent` y devuelve el texto.
+     * Con `tool_calls`: ejecuta cada una **en orden** (el modelo no las pide en paralelo), registra `tool` y añade `{"role": "tool", "tool_call_id": id, "content": <JSON del resultado>}`.
+  3. Si se agotan los pasos: devuelve `LIMIT_REPLY` y lo registra como `agent`, pero **no** lo añade al historial.
+* El historial solo contiene mensajes reales: lo que escribe el usuario, lo que responde el modelo y los resultados de las herramientas. Las respuestas generadas por el agente (error del modelo o límite de pasos) se muestran y se registran, pero no se añaden como `assistant`, porque el modelo nunca las escribió. El formato sigue siendo válido: se comprobó con Groq que acepta un `user` tras otro `user` y un `user` tras mensajes `tool`.
+* `main()`, la CLI:
+  * Crea `LLMClient` (si falta la clave, muestra el error y sale), `InventoryApiClient(httpx2.Client(base_url=settings.inventory_api_url))`, `ConversationLogger(LOG_PATH)` y el historial con el system prompt.
+  * Lee la entrada con `input("Tú: ")` y muestra `Carla: <respuesta>`. Termina con `salir`, EOF o Ctrl+C.
+* Historial: una única `list[dict]` para toda la sesión, en formato de Chat Completions. Contiene `system`, `user`, los mensajes del asistente tal como los devuelve `LLMClient` y los mensajes `tool` con su `tool_call_id`.
+
+Registro (`ConversationLogger` es el único que escribe el log):
+
+| Evento | `actor` | `message` | `tool_call` |
+|---|---|---|---|
+| Mensaje del usuario | `user` | su texto | `""` |
+| Herramienta ejecutada | `tool` | el JSON exacto enviado al modelo (`{"result": ...}` o `{"error": ...}`) | `{"name": ..., "arguments": {...}}` en JSON |
+| Respuesta final, mensaje de límite o error del modelo | `agent` | el texto que ve el usuario | `""` |
+
+Los mensajes intermedios del modelo que solo piden herramientas no se registran como `agent`.
+
+Errores:
+
+* **Error de una herramienta:** se envía al modelo como resultado y el bucle continúa.
+* **`LLMError`:** se responde `"No he podido consultar el modelo de lenguaje: <mensaje seguro>"`, que se registra como `agent` pero no se añade al historial. La sesión continúa y no se muestra ningún traceback.
+* **Fallo al escribir el registro (`OSError` o `ValueError` del logger):** `main()` muestra un mensaje claro, sin rutas internas, y termina la sesión con código 1. Registrar la conversación es obligatorio.
+
+Pruebas: `tests/test_agent.py` usa un `FakeLLM` (lo único falso) con la API real en `TestClient` sobre un CSV temporal y el logger sobre un archivo temporal. `tests/test_live_groq.py` incluye un test opt-in del agente completo con el modelo real.
 
 ## Arquitectura inicial
 
@@ -384,7 +437,7 @@ data/inventory.csv
 * `tools.py` no conoce FastAPI ni la persistencia.
 * `InventoryApiClient` es la única capa que usa `httpx2`.
 * El futuro agente accederá al inventario solo a través de las herramientas y el cliente HTTP. Nunca accede directamente al CSV ni importa el servicio o el repositorio.
-* Todavía no existen el agente (`agent.py`) ni los prompts.
+* El agente (`agent.py`, Fase 6) orquesta el bucle: usa `LLMClient`, `tools.py` (a través de `InventoryApiClient` y HTTP) y `ConversationLogger`. El system prompt está dentro de `agent.py`.
 * El cliente del modelo (`LLMClient` en `llm.py`, Fase 5) es independiente: solo usa `httpx2` y no conoce las herramientas del inventario.
 * El registro de conversaciones (`conversation_log.py`, Fase 4) es un componente aislado. Lo usará el agente, pero no depende de ninguna otra capa.
 
@@ -392,7 +445,7 @@ data/inventory.csv
 
 `inventory_app/` es el paquete principal y `agent.py`, en la raíz, es el punto de entrada del agente.
 
-Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 5 existen `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py`, `api.py`, `api_client.py`, `tools.py`, `conversation_log.py` y `llm.py`, además de `pytest.ini` en la raíz; `data/conversation_log.csv` se creará con el primer evento real):
+Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 6 existen `agent.py` en la raíz y `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py`, `api.py`, `api_client.py`, `tools.py`, `conversation_log.py` y `llm.py`, además de `pytest.ini` en la raíz; `prompts.py` no se creó (el system prompt está en `agent.py`); `data/conversation_log.csv` se creará con el primer evento real):
 
 ```text
 agent.py                     # Bucle del agente, historial en memoria y CLI de terminal
@@ -510,6 +563,7 @@ Variables en `.env` (se documentarán en `.env.example` sin valores):
 * `GROQ_MODEL`: modelo de Groq; se elegirá en la fase de integración con Groq verificando qué modelos con soporte de herramientas están disponibles.
   * Actualización (Fase 5): no se creó esta variable. El modelo es la constante `MODEL` de `llm.py` (`openai/gpt-oss-120b`).
 * Otras variables (URL de la API, rutas de los CSV, límite de pasos del agente) se definirán cuando se implementen.
+  * Actualización (Fase 6): se añadió `INVENTORY_API_URL` (por defecto `http://127.0.0.1:8000`). El límite de pasos es la constante `MAX_STEPS = 8` de `agent.py` y la ruta del log, la constante `LOG_PATH`; no son variables de entorno.
 
 ## Control de versiones
 

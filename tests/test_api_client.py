@@ -129,20 +129,44 @@ def test_unknown_route_is_not_reported_as_missing_product(api):
     assert exc_info.type is InventoryError
 
 
-@pytest.mark.parametrize(
-    ("code", "expected"),
-    [
-        ("product_already_exists", ProductAlreadyExists),
-        ("invalid_stock_change", InvalidStockChange),
-        ("validation_error", InvalidStockChange),
-    ],
-)
-def test_error_codes_not_reachable_through_these_methods(code, expected):
-    body = {"code": code, "message": "mensaje de la API", "details": {"name": "Leche"}}
-    status_code = 409 if code == "product_already_exists" else 422
+def test_invalid_stock_change_code_raises_invalid_stock_change():
+    # El cliente valida la cantidad antes de enviarla, así que la API real no llega a
+    # responder invalid_stock_change a estos métodos: se simula la respuesta.
+    body = {"code": "invalid_stock_change", "message": "mensaje de la API", "details": {}}
 
-    with pytest.raises(expected):
-        api_answering(status_code, json=body).list_products()
+    with pytest.raises(InvalidStockChange):
+        api_answering(422, json=body).list_products()
+
+
+# --- Registrar productos ---------------------------------------------------------------
+
+
+def test_create_product(api, service):
+    product = api.create_product("Leche entera", 48, "unidades", 24)
+
+    assert product == {
+        "name": "Leche entera",
+        "quantity": 48,
+        "unit": "unidades",
+        "min_stock": 24,
+        "low_stock": False,
+    }
+    assert service.get_product("leche entera").quantity == 48
+
+
+def test_create_existing_product_raises_product_already_exists(api):
+    with pytest.raises(ProductAlreadyExists) as exc_info:
+        api.create_product("LECHE DE AVENA", 1, "unidades", 0)
+    assert exc_info.value.name == "LECHE DE AVENA"
+
+
+def test_create_product_with_invalid_data_explains_why(api):
+    # validation_error no es un cambio de stock: da InventoryError con los motivos de la API.
+    with pytest.raises(InventoryError) as exc_info:
+        api.create_product("Leche 1/2", 1, "unidades", 0)
+    assert exc_info.type is InventoryError
+    assert "body.name" in str(exc_info.value)
+    assert "'/'" in str(exc_info.value)
 
 
 def test_response_not_from_our_api_does_not_expose_its_body():

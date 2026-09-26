@@ -9,8 +9,8 @@
 | 2 | API FastAPI | `httpx2` (solo desarrollo, para `TestClient`) | **Completada** (commit `29d4357`) |
 | 3 | Cliente HTTP de la API + herramientas | ninguna (`httpx2` pasa de desarrollo a ejecución) | **Completada** (commit `00cbe7d`) |
 | 4 | Conversation log (se crea `data/conversation_log.csv`) | ninguna | **Completada** (commit `1859428`) |
-| 5 | Integración con Groq (API HTTP directa con `httpx2`, sin SDK) | ninguna | **Implementada y probada**; pendiente de revisión del usuario y de commit |
-| 6 | Bucle del agente + CLI | — | Pendiente |
+| 5 | Integración con Groq (API HTTP directa con `httpx2`, sin SDK) | ninguna | **Completada** (commit `35b4076`) |
+| 6 | Bucle del agente + CLI | ninguna | **Implementada y probada**; pendiente de revisión del usuario y de commit |
 | 7 | E2E + pruebas reales con Groq | — | Pendiente |
 | 8 | Limpieza final + README + revisión | — | Pendiente |
 
@@ -222,11 +222,65 @@ Verificaciones adicionales:
 * `.env` está en `.gitignore` y no está versionado. Ningún archivo versionable contiene una clave `gsk_` real. `.env.example` solo tiene `GROQ_API_KEY=` vacío.
 * `groq` y `openai` no están instalados. `llm.py` solo importa `json` y `httpx2`.
 
+## Fase 6: resultado
+
+Diseño revisado y aprobado por el usuario antes de implementar (decisiones en `techContext.md`).
+
+Archivos creados:
+
+* `agent.py`: bucle del agente (`handle_message`), ejecución y validación de herramientas (`run_tool`), system prompt, definiciones de las 5 herramientas y CLI (`main`).
+* `tests/test_agent.py`.
+
+Archivos modificados:
+
+* `inventory_app/api_client.py`: `create_product()`; `validation_error` pasa a dar `InventoryError` con los motivos, en lugar de `InvalidStockChange`.
+* `inventory_app/tools.py`: herramienta `create_product`.
+* `inventory_app/config.py`: `Settings.inventory_api_url` (`INVENTORY_API_URL`, por defecto `http://127.0.0.1:8000`).
+* `.env.example`: `INVENTORY_API_URL` documentada, comentada y sin secretos.
+* `tests/test_api_client.py`: tests reales de `create_product` (alta, duplicado y datos inválidos). Sustituyen dos casos simulados que ahora se pueden probar contra la API.
+* `tests/test_tools.py`: delegación y error de `create_product`.
+* `tests/test_live_groq.py`: test real opt-in del agente completo.
+
+Sin dependencias nuevas, sin frameworks de agentes y sin clases en `agent.py`.
+
+## Pruebas realizadas (Fase 6)
+
+Comandos: `pytest` y `python -m pytest` → **220 passed, 3 skipped** (198 anteriores + 22 nuevos: 19 del agente, +1 neto del cliente y +2 de las herramientas; los 3 omitidos son las pruebas reales).
+
+* `test_agent.py` (19), con `FakeLLM` y la API real en `TestClient`:
+  * Bucle y herramientas:
+    * Respuesta directa: una sola llamada al modelo y fin del bucle.
+    * El resultado de una herramienta vuelve al modelo con su `tool_call_id`.
+    * Herramientas consecutivas (`list_products` → `add_stock` → respuesta final) con el CSV temporal actualizado.
+    * `remove_stock` con cantidad positiva.
+    * `create_product`.
+  * Errores:
+    * `InsufficientStock` llega al modelo y el stock no cambia.
+    * 6 peticiones inválidas llegan al modelo como error y no cambian nada: herramienta desconocida, `{"": {}}`, argumento que falta, argumento que sobra, nombre que no es texto y cantidad negativa.
+    * Producto ya existente.
+  * Historial, registro y límites:
+    * El historial se conserva entre turnos.
+    * Filas del log `user` → `tool` (con `tool_call` en JSON y el mismo resultado que recibió el modelo) → `agent`.
+    * Límite de 8 pasos: el evento se registra y el mensaje de límite no entra en el historial.
+    * `LLMError`: respuesta segura y registrada; no se añade ningún `assistant` inventado al historial, y el siguiente turno continúa.
+  * CLI y configuración:
+    * La CLI termina con código 1 y un mensaje sin rutas internas si el log no se puede escribir, sin modificarlo.
+    * `INVENTORY_API_URL` (valor por defecto y variable de entorno).
+* Pruebas reales (`GROQ_LIVE=1`, ejecutadas explícitamente): **3 passed**. Incluyen el agente completo con `openai/gpt-oss-120b`: ante "¿Qué productos están por agotarse?" usa `get_low_stock` y su respuesta menciona la leche de avena.
+
+Verificaciones adicionales:
+
+* `data/inventory.csv` sin cambios; `data/conversation_log.csv` no se crea en los tests.
+* `.env` sin versionar; ninguna clave real en archivos versionables.
+* Dependencias sin cambios; ni `groq`, ni `openai`, ni frameworks de agentes instalados.
+
 ## Problemas conocidos
 
 * `data/inventory.csv` se escribe con fin de línea `\n`. Con `core.autocrlf=true`, Git puede avisar de la conversión a CRLF; la lectura acepta ambos formatos.
-* Los cambios de la Fase 5 están pendientes de commit (se hará cuando lo indique el usuario).
-* `openai/gpt-oss-120b` puede enviar argumentos inesperados (por ejemplo `{"": {}}` para una herramienta sin parámetros). El agente deberá tolerarlos o validarlos (Fase 6).
+* `openai/gpt-oss-120b` puede enviar argumentos inesperados (por ejemplo `{"": {}}` para una herramienta sin parámetros).
+  * En la Fase 6, `run_tool` los rechaza con `InvalidArguments` y el system prompt indica que las herramientas sin parámetros se llaman con `{}`.
+  * Si el modelo insistiera, el bucle acabaría en `MAX_STEPS`. La prueba real del agente pasó, pero no muestra si el modelo necesitó reintentar.
+* Para usar el agente, la API debe estar arrancada en otra terminal (`uvicorn inventory_app.api:app`). Si no lo está, las herramientas devuelven "No se puede conectar con la API de inventario" y el modelo se lo explica al usuario.
 * `LLMClient` crea un `httpx2.Client` que no se cierra explícitamente. Para una sesión de terminal no es un problema.
 * La URL base de la API todavía no se puede configurar: no hay ninguna variable para ella. Queda pendiente para la integración del agente.
 * Si un CSV editado a mano contiene un nombre que incumple las nuevas reglas (por ejemplo, con `/`), la carga falla con `StorageError` (500 en la API). Es intencionado: se prefiere un error explícito a un producto al que no se puede acceder.
