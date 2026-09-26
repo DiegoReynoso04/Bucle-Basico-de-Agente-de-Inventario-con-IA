@@ -11,8 +11,8 @@
 | 4 | Conversation log (se crea `data/conversation_log.csv`) | ninguna | **Completada** (commit `1859428`) |
 | 5 | Integración con Groq (API HTTP directa con `httpx2`, sin SDK) | ninguna | **Completada** (commit `35b4076`) |
 | 6 | Bucle del agente + CLI | ninguna | **Completada** (commit `ee3a918`) |
-| 7 | E2E + pruebas reales con Groq | ninguna | **Implementada y probada**; pendiente de revisión del usuario y de commit |
-| 8 | Limpieza final + README + revisión | — | Pendiente |
+| 7 | E2E + pruebas reales con Groq | ninguna | **Completada** (commit `be4ac17`) |
+| 8 | Limpieza final + README + revisión | ninguna | **Terminada; lista para commit** (auditoría final realizada) |
 
 Orden de fases aprobado. Cada fase incluye sus propias pruebas y no se avanza a la siguiente sin indicación del usuario.
 
@@ -307,6 +307,59 @@ En las pruebas reales no se compara el texto de la respuesta. Solo se exige que 
   * Al repetir F5 a mano pasado un minuto: **1 passed**. No se añadieron reintentos al código.
 * `data/inventory.csv`: mismo hash antes y después de todas las ejecuciones. `data/conversation_log.csv` no se crea.
 
+## Fase 8 (terminada, lista para commit): criterios de evaluación
+
+Se auditó el proyecto contra los 10 criterios de evaluación facilitados por el usuario. Los criterios 8 y 9 estaban solo parcialmente cubiertos y ahora tienen una prueba determinista cada uno, en `tests/test_agent.py`, con `FakeLLM`, sin Groq real y sin cambios en el código de producción:
+
+* **Criterio 8 (registro append-only en varias sesiones):** `test_log_is_append_only_across_two_agent_sessions`.
+  * Ejecuta `main()` dos veces sobre el mismo `conversation_log.csv` temporal. Cada ejecución crea su propio logger, historial y modelo, como dos arranques del programa.
+  * Comprueba que el contenido de la primera sesión queda intacto byte a byte, que la segunda solo añade filas, que la cabecera aparece una sola vez, que las 4 filas quedan en orden y que la segunda sesión no recibe el historial de la primera.
+  * Prueba de mutación: si el logger reescribiera el archivo, el test falla.
+* **Criterio 9 (interacción de varios pasos):** `test_multi_step_create_product_then_ask_for_low_stock`.
+  * Dos turnos de la misma sesión, con una única lista `messages` y la API real de la prueba (`TestClient` sobre el CSV temporal).
+  * Turno 1: `create_product` registra "Leche de coco" con stock bajo (2 ≤ 5), y se comprueba en el CSV en disco.
+  * Turno 2: `get_low_stock`. Se comprueba que la primera llamada al modelo de ese turno recibe el historial completo del turno 1 y que el resultado real de la API incluye el producto recién creado.
+
+Suite normal tras añadirlas: **223 passed, 7 skipped**.
+
+Documentación y limpieza (sin cambios en el código de producción, las dependencias ni los datos):
+
+* `README.md` reescrito: sustituye al de la plantilla "Python Hello" por la documentación del proyecto (arquitectura, endpoints, persistencia en `data/inventory.csv` con `INVENTORY_CSV_PATH`, agente con Groq, bucle, registro append-only, estructura, instalación, `.env`, cómo arrancar la API y el agente y cómo ejecutar los tests, incluidos los opt-in).
+* `server.py` y `main.py` eliminados: eran de la plantilla y no los usaba ningún código, test ni configuración.
+* Memory Bank: la Fase 7 figura como cerrada en `be4ac17`.
+
+Prueba manual real, completada correctamente:
+
+* **Montaje:** una única sesión de `python agent.py` contra la API real (`uvicorn inventory_app.api:app`), Groq real (`openai/gpt-oss-120b`) y el `data/inventory.csv` real. Los mensajes se enviaron por la entrada estándar y el agente los leyó con el mismo `input()` de la CLI. No hubo errores de Groq.
+* **Escenarios:**
+  * **Entrada:** "Acaban de llegar 30 unidades de leche de avena". El modelo llamó a `list_products` (`GET /products`) y a `add_stock` con `{"name": "Leche de avena", "quantity": 30}` (`POST /products/Leche%20de%20avena/stock`). Leche de avena pasó de 12 a 42 en el CSV.
+  * **Consulta en la misma sesión:** "¿Qué productos están por agotarse?". El modelo llamó a `get_low_stock` (`GET /products/low-stock`) y respondió con Tapas para vasos 12 oz y Jarabe de vainilla; la leche de avena ya no aparece, porque tiene 42 > 20.
+  * **Producto inexistente:** "Acaban de llegar 10 unidades de un producto que no existe llamado Producto de prueba". El modelo no lo creó y pidió la unidad y el stock mínimo. No llamó a ninguna herramienta: usó la lista de productos del turno 1, que estaba en el historial.
+* **`data/conversation_log.csv`:**
+  * 9 filas (`user`/`tool`/`agent`) con la cabecera exacta.
+  * `tool_call` en JSON válido en las 3 filas `tool` y timestamps ISO 8601 con zona horaria.
+  * Sin la API key, `gsk_` ni `Bearer`.
+  * La primera fila empezaba con un BOM (`\ufeff`) que añadió PowerShell al enviar el texto por la entrada estándar. No es del programa.
+* **Restauración:** `data/inventory.csv` se restauró desde una copia y quedó byte a byte igual al estado versionado. `data/conversation_log.csv` se eliminó, porque no existía antes. La prueba no dejó cambios en los datos entregables.
+* **Suite después de la prueba:** **223 passed, 7 skipped**.
+
+Auditoría final contra los 10 criterios de evaluación, **realizada**. No se encontró ninguna modificación de producción justificada:
+
+| Estado | Criterios |
+|---|---|
+| CUBIERTO | 3, 4, 5, 6, 7, 8, 9 y 10 (**8 criterios**) |
+| PARCIAL | 2 |
+| NO VERIFICABLE | 1 |
+
+Las dos excepciones son limitaciones de verificación o de coincidencia literal con el texto del criterio disponible, no fallos de implementación confirmados:
+
+1. **Criterio 1 (los cuatro endpoints requeridos):** las operaciones del brief tienen su endpoint funcional (`GET /products`, `POST /products`, `POST /products/{name}/stock` y `GET /products/low-stock`, más `GET /health` y `GET /products/{name}`), probado en `tests/test_api.py`. Sin el enunciado original completo no se puede comprobar si coinciden literalmente con las cuatro rutas y métodos que espera el evaluador.
+2. **Criterio 2 (persistencia en `products.csv` que sobrevive a un reinicio):**
+   * El proyecto usa `data/inventory.csv`, configurable con `INVENTORY_CSV_PATH`, mientras que el criterio menciona `products.csv`. Se mantiene el nombre por decisión del usuario: no hay enunciado que confirme que ese nombre sea obligatorio. El README explica el nombre actual.
+   * La persistencia está demostrada con instancias nuevas del repositorio y del servicio sobre el mismo archivo, F6 con Uvicorn y la prueba manual. No existe un test que detenga y vuelva a arrancar literalmente el proceso del servidor.
+
+Pendiente después del commit de la Fase 8: decidir cómo integrar el trabajo en `main`, que sigue en el commit de la plantilla (pull request o merge).
+
 ## Problemas conocidos
 
 * `data/inventory.csv` se escribe con fin de línea `\n`. Con `core.autocrlf=true`, Git puede avisar de la conversión a CRLF; la lectura acepta ambos formatos.
@@ -319,4 +372,3 @@ En las pruebas reales no se compara el texto de la respuesta. Solo se exige que 
 * La URL base de la API se configura desde la Fase 6 con `INVENTORY_API_URL` (entorno o `.env`), con valor por defecto `http://127.0.0.1:8000`. Debe coincidir con la dirección en la que se arranca Uvicorn.
 * Si un CSV editado a mano contiene un nombre que incumple las nuevas reglas (por ejemplo, con `/`), la carga falla con `StorageError` (500 en la API). Es intencionado: se prefiere un error explícito a un producto al que no se puede acceder.
 * `data/conversation_log.csv` se versionará y el agente le añadirá filas en cada ejecución, así que cada sesión real generará cambios en Git. Es una consecuencia aceptada.
-* `server.py` ejecuta un servidor Flask al importarse y Flask no está instalado; no se usa en el proyecto (revisión en la Fase 8).

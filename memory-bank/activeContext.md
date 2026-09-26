@@ -2,9 +2,7 @@
 
 ## Trabajo actual
 
-Fase 7 (E2E + pruebas reales con Groq): **implementada y probada**, pendiente de revisión del usuario y de commit.
-
-La Fase 8 no ha comenzado y solo comenzará cuando el usuario lo indique.
+Fase 8 (limpieza final + README + revisión): **terminada y lista para commit**. Hecho: auditoría contra los criterios de evaluación, pruebas de los criterios 8 y 9, README reescrito, archivos de la plantilla eliminados, Memory Bank actualizado, **prueba manual real con Groq completada** (3 escenarios correctos y datos restaurados) y **auditoría final realizada** (resultado en `progress.md`). Pendiente: commit y push.
 
 ## Estado de las fases
 
@@ -14,13 +12,23 @@ La Fase 8 no ha comenzado y solo comenzará cuando el usuario lo indique.
 * Fase 4 (registro de conversaciones): completada, commit `1859428`.
 * Fase 5 (integración con Groq): completada, commit `35b4076`.
 * Fase 6 (bucle del agente + CLI): completada, commit `ee3a918`.
-* Fase 7 (E2E + pruebas reales): implementada y probada; pendiente de commit.
-* Fase 8 (limpieza final + README + revisión): pendiente.
+* Fase 7 (E2E + pruebas reales): completada, commit `be4ac17`.
+* Fase 8 (limpieza final + README + revisión): terminada y lista para commit.
 * `data/conversation_log.csv` todavía no existe: se creará con el primer mensaje en una sesión real de `python agent.py`.
 
-Rama de trabajo: `fase-1-base-persistencia`, sincronizada con GitHub (`origin`) hasta la Fase 6.
+Rama de trabajo: `fase-1-base-persistencia`, sincronizada con GitHub (`origin`) hasta la Fase 7 (`be4ac17`). `main` sigue en el commit de la plantilla (`142f2a9`).
 
-## Hecho recientemente (Fase 7)
+## Hecho recientemente (Fase 8, sin commit)
+
+* Auditoría contra los 10 criterios de evaluación. Los criterios 8 (append-only entre sesiones) y 9 (interacción de varios pasos) tienen ahora pruebas deterministas en `tests/test_agent.py`. Suite normal: **223 passed, 7 skipped**.
+* `README.md` reescrito con la documentación del proyecto real.
+* `server.py` y `main.py` (plantilla, sin uso) eliminados.
+* El archivo de persistencia sigue siendo `data/inventory.csv` (no se renombra a `products.csv`); el README lo explica junto con `INVENTORY_CSV_PATH`.
+* Auditoría final: 8 criterios CUBIERTOS (3–10), 1 PARCIAL (criterio 2) y 1 NO VERIFICABLE (criterio 1). Las dos excepciones son limitaciones de verificación o de coincidencia literal, no fallos confirmados; están documentadas en `progress.md`:
+  * criterio 1: no se pueden comprobar las rutas y métodos literales sin el enunciado original;
+  * criterio 2: se usa `data/inventory.csv` y no `products.csv`, y no hay un test de reinicio literal del proceso servidor.
+
+## Hecho en la Fase 7
 
 * Solo tests; sin cambios en el código de producción ni dependencias nuevas.
 * `tests/test_agent.py`: F6, la CLI completa con `FakeLLM` contra la API servida por Uvicorn en un hilo (HTTP real) sobre una copia del inventario, con el CSV y el log comprobados en disco.
@@ -66,10 +74,10 @@ Para usar el agente:
 
 ## Cuestiones abiertas
 
-* Revisión de la Fase 7 y commit (no se hace sin indicación del usuario).
-* Pendiente para la Fase 8: decidir si se hace una sesión manual real (`uvicorn` + `python agent.py`) para generar un `data/conversation_log.csv` de ejemplo. Esa sesión modificaría el `data/inventory.csv` real.
+* La prueba manual se hizo sobre los archivos reales y después se restauraron: el repositorio no incluye un `data/conversation_log.csv` de ejemplo. Se crea con la primera sesión real del agente.
+* Cómo integrar el trabajo en `main` (pull request o merge): se decidirá después del commit de la Fase 8.
 * La CLI etiqueta al asistente como "Carla:" y al usuario como "Tú:", según el ejemplo del usuario. En el resto del proyecto, Carla es la usuaria.
 
 ## Siguiente paso
 
-Revisión y commit de la Fase 7 por parte del usuario. Después, la Fase 8 (limpieza final + README + revisión) cuando el usuario lo indique.
+Commit y push de la Fase 8 cuando el usuario lo indique. Después, decidir la integración de la rama `fase-1-base-persistencia` con `main`.

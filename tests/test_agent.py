@@ -213,6 +213,36 @@ def test_history_is_kept_between_turns(messages, api, logger):
     assert [m["content"] for m in second_turn[1:]] == ["Hola", "Hola, Carla.", "¿Qué me has dicho antes?"]
 
 
+def test_multi_step_create_product_then_ask_for_low_stock(messages, api, logger, csv_path):
+    # Dos turnos de la misma sesión (misma lista `messages`): el turno 2 usa el estado
+    # real que dejó el turno 1. La API es la real de la prueba (TestClient sobre el CSV
+    # temporal); solo el modelo es falso.
+    new_product = {"name": "Leche de coco", "quantity": 2, "unit": "unidades", "min_stock": 5}
+    llm = FakeLLM(
+        tool_call("create_product", new_product, "call_1"),
+        text("Registrada la leche de coco."),
+        tool_call("get_low_stock", {}, "call_2"),
+        text("Por agotarse: leche de avena, jarabe de vainilla y leche de coco."),
+    )
+
+    # Turno 1: registrar un producto nuevo con stock bajo (2 <= 5).
+    agent.handle_message("Registra la leche de coco: 2 unidades, stock mínimo 5", messages, llm, api, logger)
+
+    saved = {p.name: p for p in CsvInventoryRepository(csv_path).load()}
+    assert saved["Leche de coco"].quantity == 2 and saved["Leche de coco"].low_stock
+
+    # Turno 2: preguntar por las alertas.
+    agent.handle_message("¿Qué productos están por agotarse?", messages, llm, api, logger)
+
+    # El turno 2 recibe el historial completo del turno 1.
+    first_call_turn_2 = llm.calls[2]["messages"]
+    assert [m["role"] for m in first_call_turn_2] == ["system", "user", "assistant", "tool", "assistant", "user"]
+    assert tool_result(first_call_turn_2[3])["result"]["name"] == "Leche de coco"
+    # El resultado real de la API incluye el producto recién creado.
+    low_stock = tool_result(llm.calls[3]["messages"][-1])["result"]
+    assert [p["name"] for p in low_stock] == ["Leche de avena", "Jarabe de vainilla", "Leche de coco"]
+
+
 def test_events_are_logged(messages, api, logger, log_path):
     llm = FakeLLM(tool_call("add_stock", {"name": "Leche de avena", "quantity": 30}), text("Hecho: hay 42."))
 
@@ -275,6 +305,40 @@ def test_cli_stops_when_log_cannot_be_written(monkeypatch, capsys, tmp_path):
     assert "no se puede escribir el registro de conversaciones" in out
     assert str(tmp_path) not in out  # sin rutas internas
     assert bad_log.read_text(encoding="utf-8") == "otra,cabecera\n"
+
+
+def test_log_is_append_only_across_two_agent_sessions(monkeypatch, tmp_path):
+    # Dos ejecuciones completas de main() sobre el mismo log: cada una crea su propio
+    # logger, su propio historial y su propio modelo, como dos arranques del programa.
+    log_path = tmp_path / "conversation_log.csv"
+    monkeypatch.setattr(agent, "LOG_PATH", log_path)
+    monkeypatch.setenv("GROQ_API_KEY", "clave-falsa")
+    session_llms = []
+
+    def run_session(user_text: str, reply: str):
+        llm = FakeLLM(text(reply))
+        session_llms.append(llm)
+        monkeypatch.setattr(agent, "LLMClient", lambda api_key: llm)
+        user_inputs = iter([user_text, "salir"])
+        monkeypatch.setattr("builtins.input", lambda prompt: next(user_inputs))
+        assert agent.main() == 0
+
+    run_session("Hola, soy Carla", "Hola, Carla.")
+    after_first_session = log_path.read_bytes()
+    run_session("¿Qué falta?", "Nada por ahora.")
+
+    content = log_path.read_bytes()
+    # La primera sesión queda intacta byte a byte y la segunda solo añade filas.
+    assert content.startswith(after_first_session) and len(content) > len(after_first_session)
+    assert content.decode("utf-8").count("actor,message,tool_call,timestamp") == 1
+    assert [(row["actor"], row["message"]) for row in log_rows(log_path)] == [
+        ("user", "Hola, soy Carla"),
+        ("agent", "Hola, Carla."),
+        ("user", "¿Qué falta?"),
+        ("agent", "Nada por ahora."),
+    ]
+    # Son sesiones independientes: la segunda no recibe el historial de la primera.
+    assert [m["content"] for m in session_llms[1].calls[0]["messages"][1:]] == ["¿Qué falta?"]
 
 
 @pytest.fixture

@@ -436,7 +436,7 @@ data/inventory.csv
 
 * `tools.py` no conoce FastAPI ni la persistencia.
 * `InventoryApiClient` es la única capa que usa `httpx2`.
-* El futuro agente accederá al inventario solo a través de las herramientas y el cliente HTTP. Nunca accede directamente al CSV ni importa el servicio o el repositorio.
+* El agente accede al inventario solo a través de las herramientas y el cliente HTTP. Nunca accede directamente al CSV ni importa el servicio o el repositorio.
 * El agente (`agent.py`, Fase 6) orquesta el bucle: usa `LLMClient`, `tools.py` (a través de `InventoryApiClient` y HTTP) y `ConversationLogger`. El system prompt está dentro de `agent.py`.
 * El cliente del modelo (`LLMClient` en `llm.py`, Fase 5) es independiente: solo usa `httpx2` y no conoce las herramientas del inventario.
 * El registro de conversaciones (`conversation_log.py`, Fase 4) es un componente aislado. Lo usará el agente, pero no depende de ninguna otra capa.
@@ -590,6 +590,12 @@ Decisiones tomadas en Fase 0:
 * `main.py`: `print("Hello World")` de la plantilla. Se revisará en la fase final de limpieza. No eliminar antes.
 * `learn.json`: metadatos de la plataforma 4Geeks. Se conserva por si la plataforma lo necesita.
 * `README.es.md`: eliminado intencionadamente. El proyecto tendrá un único `README.md` como documentación principal.
+
+Decisiones tomadas en la Fase 8 (limpieza final):
+
+* `server.py` y `main.py` se eliminan. Se comprobó que ningún código, test, configuración ni documentación actual los usa: solo los mencionaban el README de la plantilla y este documento. Siguen disponibles en el historial de Git.
+* `learn.json` se conserva, según la decisión de la Fase 0.
+* `README.md` se reescribe con la documentación del proyecto real.
 
 ## Principio de evolución
 
