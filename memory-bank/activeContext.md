@@ -2,21 +2,19 @@
 
 ## Trabajo actual
 
-Fase 4 (registro de conversaciones): **implementada, probada y aprobada** por el usuario; pendiente de commit.
+Fase 5 (integración con Groq mediante `LLMClient`): **implementada y probada**, pendiente de revisión del usuario y de commit.
 
-La siguiente fase no ha comenzado y solo comenzará cuando el usuario lo indique.
+La Fase 6 no ha comenzado y solo comenzará cuando el usuario lo indique.
 
 ## Estado de las fases
 
 * Fase 0 y Fase 1: completadas, commit `d465645`.
 * Fase 2 (API FastAPI): completada, commit `29d4357`.
 * Fase 3 (cliente HTTP + herramientas): completada, commit `00cbe7d`.
-* Fase 4 (registro de conversaciones): implementada, probada y aprobada; pendiente de commit.
-* Fases 5 en adelante (integración con Groq, bucle del agente + CLI, E2E, limpieza final): pendientes.
-* Todavía no existen:
-  * La integración con Groq (el paquete `groq` no está instalado).
-  * `LLMClient`, `llm.py` y `prompts.py`.
-  * `agent.py`, y por tanto tampoco el bucle del agente.
+* Fase 4 (registro de conversaciones): completada, commit `1859428`.
+* Fase 5 (integración con Groq): implementada y probada; pendiente de commit.
+* Fases 6 en adelante (bucle del agente + CLI, E2E, limpieza final): pendientes.
+* Todavía no existen `agent.py` (ni el bucle del agente, ni su memoria de conversación) ni `prompts.py`.
 * `data/conversation_log.csv` todavía no existe: se creará con el primer evento real del agente.
 
 Rama de trabajo: `fase-1-base-persistencia` (conectada a `origin`).
@@ -25,49 +23,49 @@ Rama de trabajo: `fase-1-base-persistencia` (conectada a `origin`).
 
 `.venv` con **Python 3.14.6** (en el ordenador actual). Dependencias instaladas desde `requirements-dev.txt`.
 
-## Hecho recientemente (Fase 4)
+## Hecho recientemente (Fase 5)
 
-* `inventory_app/conversation_log.py`: `ConversationLogger(path)` con `log(actor, message, tool_call="")`.
-* `tests/test_conversation_log.py`: 18 tests.
-* Sin dependencias nuevas y sin cambios en archivos existentes.
-* Suite completa: **181 passed** con `pytest` y con `python -m pytest`. `data/inventory.csv` intacto; el log real no se crea en los tests.
+* `inventory_app/llm.py`: `LLMClient(api_key, http=None)` con `complete(messages, tools=None)`, y `LLMError`.
+* `inventory_app/config.py`: `Settings.groq_api_key` (variable `GROQ_API_KEY`).
+* `tests/test_llm.py`: 17 tests sin red. `tests/test_live_groq.py`: 2 tests reales, solo con `GROQ_LIVE=1`.
+* Suite normal: **198 passed, 2 skipped** con `pytest` y con `python -m pytest`. Prueba real ejecutada explícitamente: 2 passed.
 
-## Decisiones tomadas durante la Fase 4
+## Decisiones tomadas durante la Fase 5
 
-* Una sola clase con un solo método. Solo añade (append) y no mantiene memoria de la conversación: la memoria completa de la sesión será responsabilidad del futuro agente. No depende de ninguna otra capa del proyecto.
-* La ruta es obligatoria (sin ruta por defecto ni cambios en `config.py`), así los tests no pueden escribir en el log real por accidente.
-* Modo `"a+"`: lee la primera línea y escribe siempre al final. `csv` estándar, UTF-8 sin BOM, fin de línea `\n`.
-* Cabecera:
-  * Se escribe si el archivo no existe o está vacío.
-  * Si el archivo ya tiene contenido y su primera línea no es exactamente `actor,message,tool_call,timestamp`, se rechaza la escritura con `ValueError` sin modificar el archivo.
-* Validación del formato del evento, no de reglas del agente:
-  * `actor` en `user`/`agent`/`tool`.
-  * `message` y `tool_call` deben ser texto (`str`), sin convertir otros tipos.
-  * `tool_call` **no** es obligatorio para `actor="tool"`.
-  * Si algo no es válido, no se toca el archivo.
-* El formato interno de `tool_call` queda deliberadamente abierto hasta implementar el agente.
-* Los errores de escritura (`OSError`) se propagan a quien llama; no se ocultan.
-* `timestamp` en hora local con su desfase horario, ISO 8601 con precisión de segundos.
+* API HTTP directa de Groq (`POST https://api.groq.com/openai/v1/chat/completions`) con `httpx2`. **Sin SDK `groq` ni `openai`**, y sin dependencias nuevas.
+* Modelo elegido para todo el proyecto: `openai/gpt-oss-120b`.
+  * Está disponible en Groq, admite tool use y se usa por HTTP directo.
+  * Está centralizado en la constante `MODEL` de `llm.py`, sin configuración para elegir modelo.
+  * No admite tool calls en paralelo: la Fase 6 diseñará el bucle de forma secuencial.
+* `LLMClient` es la única capa que conoce la comunicación HTTP con Groq. Recibe las herramientas como datos y no importa ni ejecuta `tools.py`.
+* La clave se lee de `GROQ_API_KEY` en `config.py` y se pasa a `LLMClient`. Si falta, se lanza `LLMError`.
+* `complete` envía `messages` y, si se pasan, `tools` en formato de Groq. `LLMClient` no conoce las herramientas del inventario.
+* Devuelve `{"content", "tool_calls": [{"id", "name", "arguments": dict}], "message"}`. Con eso se distingue una respuesta de texto de una petición de herramientas.
+  * Los argumentos se convierten de texto JSON a `dict`, sin corregirlos.
+  * `message` es un `dict` listo para añadirlo al historial.
+* El caso `{"": {}}` observado en la prueba real queda como cuestión de la Fase 6, no de `LLMClient`.
+* Errores de HTTP, conexión, timeout y respuestas inesperadas dan `LLMError` con mensajes seguros, sin la clave ni detalles internos. Sin reintentos.
+* Timeout de 30 s. Sin streaming ni gestión de límites.
 * Detalle completo en `techContext.md`.
 
 ## Cuestiones abiertas
 
-* Commit de la Fase 4 (no se hace sin indicación del usuario).
+* Revisión de la Fase 5 y commit (no se hace sin indicación del usuario).
 
-## Decisiones pendientes (se cierran en su fase)
+## Decisiones pendientes (Fase 6: bucle del agente + CLI)
 
-| Decisión | Fase |
-|---|---|
-| URL base de la API y cómo se configura | Al integrar el agente |
-| Cómo se convierten las herramientas en definiciones para el modelo | Integración con el LLM (5) |
-| Integración con Groq: SDK o HTTP directo, y modelo concreto | 5 |
-| Dónde se convierten las excepciones de las herramientas en el resultado estructurado para el modelo | Bucle del agente (6) |
-| Formato concreto de `tool_call` (y texto de `message`) en cada tipo de fila del log | Bucle del agente (6) |
-| Cómo maneja el agente un fallo al escribir el log (`OSError` o cabecera inválida) y cómo se transforman esos errores para el agente o el LLM | Bucle del agente (6) |
-| Límite de pasos del agente | 6 |
-
-Las dos decisiones del registro se aplazan a la Fase 6 porque dependen de cómo el agente use el logger. El logger ya admite cualquiera de las opciones.
+| Decisión |
+|---|
+| URL base de la API de inventario y cómo se configura |
+| Definición de las 4 herramientas para el modelo (nombre, descripción, JSON Schema de parámetros) y cómo se ejecuta cada tool call |
+| System prompt de Carla |
+| Qué hacer con argumentos inesperados del modelo (por ejemplo `{"": {}}`) o con una herramienta desconocida |
+| Dónde y cómo se convierten las excepciones de las herramientas (y `LLMError`) en el resultado estructurado para el modelo o en el mensaje para Carla |
+| Formato concreto de `tool_call` (y texto de `message`) en cada tipo de fila del log |
+| Cómo maneja el agente un fallo al escribir el log (`OSError` o cabecera inválida) |
+| Límite de pasos del agente |
+| Diseño secuencial del bucle (el modelo no admite tool calls en paralelo) |
 
 ## Siguiente paso
 
-Commit de la Fase 4 por parte del usuario. Después, la Fase 5 (integración con Groq) cuando el usuario lo indique.
+Revisión y commit de la Fase 5 por parte del usuario. Después, la Fase 6 (bucle del agente + CLI) cuando el usuario lo indique.

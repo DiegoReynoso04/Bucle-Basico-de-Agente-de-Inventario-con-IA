@@ -8,8 +8,8 @@
 | 1 | Base y persistencia | `python-dotenv`, `pytest` | **Completada** (commit `d465645`) |
 | 2 | API FastAPI | `httpx2` (solo desarrollo, para `TestClient`) | **Completada** (commit `29d4357`) |
 | 3 | Cliente HTTP de la API + herramientas | ninguna (`httpx2` pasa de desarrollo a ejecución) | **Completada** (commit `00cbe7d`) |
-| 4 | Conversation log (se crea `data/conversation_log.csv`) | ninguna | **Implementada, probada y aprobada**; pendiente de commit |
-| 5 | Integración con Groq (SDK o HTTP directo, a decidir) | a decidir | Pendiente |
+| 4 | Conversation log (se crea `data/conversation_log.csv`) | ninguna | **Completada** (commit `1859428`) |
+| 5 | Integración con Groq (API HTTP directa con `httpx2`, sin SDK) | ninguna | **Implementada y probada**; pendiente de revisión del usuario y de commit |
 | 6 | Bucle del agente + CLI | — | Pendiente |
 | 7 | E2E + pruebas reales con Groq | — | Pendiente |
 | 8 | Limpieza final + README + revisión | — | Pendiente |
@@ -188,10 +188,46 @@ Verificaciones adicionales:
 * `data/conversation_log.csv` real: los tests no lo crean ni lo modifican. El logger exige una ruta explícita y los tests usan `tmp_path`.
 * `conversation_log.py` solo importa `csv`, `datetime` y `pathlib`.
 
+## Fase 5: resultado
+
+Archivos creados:
+
+* `inventory_app/llm.py`: `LLMClient(api_key, http=None)` con `complete(messages, tools=None)`, y `LLMError`.
+* `tests/test_llm.py`: tests con respuestas simuladas.
+* `tests/test_live_groq.py`: prueba real opcional, fuera de la suite normal.
+
+Archivo modificado:
+
+* `inventory_app/config.py`: `Settings.groq_api_key` (lee `GROQ_API_KEY`).
+
+Sin dependencias nuevas: no se instalan `groq` ni `openai`. Se reutiliza `httpx2`.
+
+## Pruebas realizadas (Fase 5)
+
+Comandos: `pytest` y `python -m pytest` → **198 passed, 2 skipped** (181 de las Fases 1–4 + 17 de `LLMClient`; los 2 omitidos son los tests reales).
+
+* `test_llm.py` (17), sin red:
+  * Construcción: se rechaza una clave ausente o vacía. `get_settings()` lee `GROQ_API_KEY` y trata una clave en blanco como ausente.
+  * Sin cliente inyectado se usaría la red real, que la fixture bloquea en los tests.
+  * Petición: `POST` a la URL de Groq, `Authorization: Bearer <clave>` y cuerpo con `model`, `messages` y `tools`. `tools` no se envía si no se pasa.
+  * Respuesta de texto y respuesta con dos tool calls (argumentos convertidos a `dict` y `message` listo para el historial).
+  * Errores HTTP 401 (con código de Groq) y 500 (sin JSON), error de conexión y timeout: todos dan `LLMError` sin la clave, sin `Bearer` y sin el mensaje interno.
+  * Respuestas inesperadas (5 casos: no es JSON, sin `choices`, `content` no textual, argumentos que no son JSON o que no son un objeto) dan `LLMError`.
+* Prueba real (`GROQ_LIVE=1`, ejecutada explícitamente): **2 passed** con `openai/gpt-oss-120b`.
+  * En la primera ejecución, el modelo pidió `get_low_stock` con argumentos `{"": {}}` en vez de `{}`. La aserción era demasiado estricta para el modelo; se cambió para comprobar solo que los argumentos llegan como `dict`, y el comportamiento queda anotado para la Fase 6.
+
+Verificaciones adicionales:
+
+* `data/inventory.csv` sin cambios; `data/conversation_log.csv` no se crea.
+* `.env` está en `.gitignore` y no está versionado. Ningún archivo versionable contiene una clave `gsk_` real. `.env.example` solo tiene `GROQ_API_KEY=` vacío.
+* `groq` y `openai` no están instalados. `llm.py` solo importa `json` y `httpx2`.
+
 ## Problemas conocidos
 
 * `data/inventory.csv` se escribe con fin de línea `\n`. Con `core.autocrlf=true`, Git puede avisar de la conversión a CRLF; la lectura acepta ambos formatos.
-* Los cambios de la Fase 4 están pendientes de commit (se hará cuando lo indique el usuario).
+* Los cambios de la Fase 5 están pendientes de commit (se hará cuando lo indique el usuario).
+* `openai/gpt-oss-120b` puede enviar argumentos inesperados (por ejemplo `{"": {}}` para una herramienta sin parámetros). El agente deberá tolerarlos o validarlos (Fase 6).
+* `LLMClient` crea un `httpx2.Client` que no se cierra explícitamente. Para una sesión de terminal no es un problema.
 * La URL base de la API todavía no se puede configurar: no hay ninguna variable para ella. Queda pendiente para la integración del agente.
 * Si un CSV editado a mano contiene un nombre que incumple las nuevas reglas (por ejemplo, con `/`), la carga falla con `StorageError` (500 en la API). Es intencionado: se prefiere un error explícito a un producto al que no se puede acceder.
 * `data/conversation_log.csv` se versionará y el agente le añadirá filas en cada ejecución, así que cada sesión real generará cambios en Git. Es una consecuencia aceptada.

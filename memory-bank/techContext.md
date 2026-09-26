@@ -106,6 +106,80 @@ Variable esperada:
 
 La clave nunca debe escribirse directamente en el código ni incluirse en Git.
 
+### Decisiones aprobadas (Fase 5): `LLMClient`
+
+Implementado en `inventory_app/llm.py`. Se usa **directamente la API HTTP de Groq, sin los SDK `groq` ni `openai`**. El cliente HTTP es `httpx2==2.13.1`, que ya era dependencia de ejecución.
+
+```text
+futuro agent.py → LLMClient → httpx2 → Groq API
+```
+
+* `LLMClient` es la única capa que conoce la comunicación HTTP con Groq: URL, cabeceras, clave, formato de la petición y errores HTTP.
+* Las herramientas se reciben como datos. `LLMClient` no importa ni ejecuta `tools.py`.
+
+Petición (verificada en la documentación oficial de Groq y con una prueba real):
+
+* `POST https://api.groq.com/openai/v1/chat/completions` (Chat Completions, compatible con el formato de OpenAI).
+* Cabecera `Authorization: Bearer <GROQ_API_KEY>`.
+* Cuerpo JSON: `{"model": ..., "messages": [...]}`, más `"tools": [...]` solo si se pasan herramientas. No se envían más parámetros (el valor por defecto de `tool_choice` es `auto`).
+* Formato de `tools` (lo construirá el agente): `[{"type": "function", "function": {"name", "description", "parameters": <JSON Schema>}}]`.
+* Timeout explícito de 30 s por petición. Sin reintentos, backoff, streaming ni gestión de límites.
+* URL, modelo y timeout son constantes del módulo (`GROQ_CHAT_URL`, `MODEL`, `TIMEOUT_SECONDS`): el nombre del modelo está en un único sitio.
+
+Modelo (decisión definitiva del usuario): **`openai/gpt-oss-120b`**.
+
+* Es el modelo elegido para todo el proyecto. Está disponible en Groq, admite tool use y se usa mediante HTTP directo.
+* Está centralizado en la constante `MODEL` de `llm.py`. No se repite en `agent.py`, `.env` ni los tests (que importan `MODEL`), y no hay variable `GROQ_MODEL` ni configuración para elegir modelo.
+* Según la documentación de Groq **no admite tool calls en paralelo**, así que la Fase 6 diseñará el bucle de forma secuencial. Aun así, `LLMClient` acepta varias tool calls en una respuesta, porque el formato de la API lo permite.
+
+Configuración:
+
+* `config.py`: `Settings.groq_api_key` se lee de `GROQ_API_KEY` (entorno o `.env`). Vale `None` si falta o está vacía.
+* `LLMClient(api_key, http=None)` recibe la clave. Si falta, lanza `LLMError("Falta GROQ_API_KEY: defínela en el archivo .env.")`.
+* `http` permite inyectar un `httpx2.Client` (en los tests, con `MockTransport`). Sin él, se crea un `httpx2.Client()` real.
+
+Interfaz:
+
+* `complete(messages, tools=None) -> dict`. `messages` y `tools` se reciben ya en formato de Groq y se envían tal cual. `LLMClient` no conoce las herramientas del inventario ni importa `tools.py`.
+* No ejecuta herramientas ni implementa el bucle del agente.
+
+Respuesta normalizada (un `dict` de Python; nunca el objeto de `httpx2` ni el JSON crudo completo de Groq). Permite distinguir una respuesta de texto (`tool_calls` vacío) de una petición de herramientas:
+
+```python
+{
+    "content": "texto del asistente",   # "" si el modelo solo pide herramientas
+    "tool_calls": [                     # [] si es una respuesta normal
+        {"id": "call_1", "name": "add_stock", "arguments": {"name": "Leche de avena", "quantity": 30}},
+    ],
+    "message": {"role": "assistant", "content": "...", "tool_calls": [...]},
+}
+```
+
+* `tool_calls[].arguments` ya es un `dict`: Groq envía los argumentos como texto JSON y `LLMClient` los convierte. No corrige ni interpreta su contenido.
+* `message` es un `dict` normal: el mensaje del asistente, listo para añadirlo directamente al historial antes de enviar los resultados de las herramientas. Incluye los `tool_calls` tal como los devolvió Groq, para que el agente no tenga que reconstruir su formato. Los resultados se envían como `{"role": "tool", "tool_call_id": <id>, "content": ...}`.
+* Solo se valida la estructura necesaria:
+  * `choices[0].message`.
+  * `content` debe ser texto o `null`.
+  * Cada tool call debe tener `id`, `function.name` y `function.arguments` con un objeto JSON.
+
+Errores (`LLMError`, definida en `llm.py` porque no pertenece a los errores del inventario):
+
+| Caso | Mensaje de `LLMError` |
+|---|---|
+| Falta la clave | `Falta GROQ_API_KEY: defínela en el archivo .env.` |
+| Respuesta HTTP de error | `Groq rechazó la petición (HTTP <status>[, <code>]).` Solo incluye el `error.code` de Groq (por ejemplo `invalid_api_key`), nunca su mensaje completo |
+| Timeout | `Groq no respondió a tiempo.` |
+| Error de conexión | `No se puede conectar con Groq.` |
+| JSON mal formado o estructura inesperada | `Groq devolvió una respuesta con un formato inesperado.` |
+
+* Los mensajes nunca contienen la clave, la cabecera `Authorization` ni detalles internos. La excepción original queda encadenada (`from exc`) solo para depurar; no debe llegar al modelo.
+
+Comportamiento observado en la prueba real: para una herramienta sin parámetros, `openai/gpt-oss-120b` envió los argumentos `{"": {}}` en lugar de `{}`.
+
+* No es responsabilidad de `LLMClient`: se limita a convertir el JSON en `dict` y no lo corrige.
+* La tolerancia o corrección de argumentos se decidirá en la Fase 6, al definir las herramientas y el comportamiento del agente.
+* El test real comprueba que existe la tool call esperada y que `arguments` es un `dict`, sin exigir `{}`.
+
 ## Variables de entorno
 
 Las variables sensibles se gestionarán mediante `.env`.
@@ -310,14 +384,15 @@ data/inventory.csv
 * `tools.py` no conoce FastAPI ni la persistencia.
 * `InventoryApiClient` es la única capa que usa `httpx2`.
 * El futuro agente accederá al inventario solo a través de las herramientas y el cliente HTTP. Nunca accede directamente al CSV ni importa el servicio o el repositorio.
-* Todavía no existen el agente (`agent.py`), la integración con Groq, el cliente del modelo (`LLMClient` / `llm.py`) ni los prompts.
+* Todavía no existen el agente (`agent.py`) ni los prompts.
+* El cliente del modelo (`LLMClient` en `llm.py`, Fase 5) es independiente: solo usa `httpx2` y no conoce las herramientas del inventario.
 * El registro de conversaciones (`conversation_log.py`, Fase 4) es un componente aislado. Lo usará el agente, pero no depende de ninguna otra capa.
 
 ### Estructura aprobada (Fase 0)
 
 `inventory_app/` es el paquete principal y `agent.py`, en la raíz, es el punto de entrada del agente.
 
-Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 4 existen `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py`, `api.py`, `api_client.py`, `tools.py` y `conversation_log.py`, además de `pytest.ini` en la raíz; `data/conversation_log.csv` se creará con el primer evento real):
+Estructura prevista (los archivos se crean progresivamente en cada fase; tras la Fase 5 existen `config.py`, `models.py`, `errors.py`, `repository.py`, `service.py`, `api.py`, `api_client.py`, `tools.py`, `conversation_log.py` y `llm.py`, además de `pytest.ini` en la raíz; `data/conversation_log.csv` se creará con el primer evento real):
 
 ```text
 agent.py                     # Bucle del agente, historial en memoria y CLI de terminal
@@ -331,7 +406,7 @@ inventory_app/
   api.py                     # Aplicación FastAPI y endpoints
   api_client.py              # Cliente HTTP de la API (usado por las herramientas)
   tools.py                   # Definición y ejecución de herramientas del agente
-  llm.py                     # Integración con Groq tras una interfaz sustituible
+  llm.py                     # LLMClient: Chat Completions de Groq por HTTP (httpx2)
   prompts.py                 # Prompt de sistema
   conversation_log.py        # Registro append-only de conversaciones
 data/                        # inventory.csv y conversation_log.csv
@@ -384,6 +459,11 @@ Actualización (Fase 3):
 * `InventoryApiClient` se prueba contra la aplicación FastAPI real mediante `TestClient`, sin Uvicorn. Solo las respuestas que la API no puede producir con sus métodos (y los errores de conexión) se simulan con `httpx2.MockTransport`, que viene con `httpx2`.
 * Las herramientas se prueban con un cliente falso pequeño definido dentro del test. Solo se comprueba la delegación y la propagación de excepciones.
 
+Actualización (Fase 5):
+
+* `LLMClient` se prueba con respuestas de Groq simuladas mediante `httpx2.MockTransport`. Una fixture `autouse` en `test_llm.py` hace fallar cualquier conexión real (`httpx2.HTTPTransport.handle_request`), así que la suite normal no llega a Internet ni consume tokens.
+* `tests/test_live_groq.py` hace dos llamadas reales (texto y tool call) y está separado de la suite normal. Se omite salvo que se ejecute explícitamente con `GROQ_LIVE=1` (`$env:GROQ_LIVE = "1"; pytest tests/test_live_groq.py`). Usa `GROQ_API_KEY` de `.env` y no la muestra.
+
 ## Dependencias
 
 Las dependencias deberán mantenerse reducidas a las necesarias para el funcionamiento del proyecto.
@@ -406,7 +486,7 @@ Dependencias aprobadas y fase en la que se instalan (no se instalan antes de la 
 | `python-dotenv` | Lectura de variables de entorno desde `.env` | 1 |
 | `pytest` | Pruebas automatizadas (desarrollo) | 1 |
 | `httpx` | Comunicación HTTP entre agente/herramientas y la API; requisito de `TestClient` | 3 (sustituida por `httpx2`, ver abajo) |
-| `groq` | Integración con la API de Groq | 5 |
+| `groq` | Integración con la API de Groq | 5 (**no se instala**: ver abajo) |
 
 Actualización (Fase 2): en la Fase 0 se preveía que la Fase 2 no añadiría dependencias, pero `TestClient` no funciona sin un cliente HTTP. La versión instalada de Starlette (1.7.0, que trae FastAPI 0.141.1) requiere `httpx2` y solo admite `httpx` como alternativa obsoleta. Decisión aprobada:
 
@@ -415,7 +495,9 @@ Actualización (Fase 2): en la Fase 0 se preveía que la Fase 2 no añadiría de
 
 Actualización (Fase 3): `httpx2==2.13.1` pasa de dependencia de desarrollo a dependencia de ejecución, porque ahora `InventoryApiClient` lo usa para hablar con la API. Se quita de `requirements-dev.txt`, que lo recibe a través de `-r requirements.txt`. No se añadió ninguna otra dependencia.
 
-Estado actual de los archivos de dependencias (tras la Fase 3):
+Actualización (Fase 5): la integración con Groq usa directamente su API HTTP con `httpx2`. No se instala el SDK `groq` ni `openai`, y no se añade ninguna dependencia.
+
+Estado actual de los archivos de dependencias (tras la Fase 5, sin cambios desde la Fase 3):
 
 * `requirements.txt`: `fastapi==0.141.1`, `uvicorn==0.54.0`, `pydantic==2.13.5`, `python-dotenv==1.2.3`, `httpx2==2.13.1`.
 * `requirements-dev.txt`: `-r requirements.txt`, `pytest==9.1.1`.
@@ -426,6 +508,7 @@ Variables en `.env` (se documentarán en `.env.example` sin valores):
 
 * `GROQ_API_KEY`: obligatoria solo para el agente.
 * `GROQ_MODEL`: modelo de Groq; se elegirá en la fase de integración con Groq verificando qué modelos con soporte de herramientas están disponibles.
+  * Actualización (Fase 5): no se creó esta variable. El modelo es la constante `MODEL` de `llm.py` (`openai/gpt-oss-120b`).
 * Otras variables (URL de la API, rutas de los CSV, límite de pasos del agente) se definirán cuando se implementen.
 
 ## Control de versiones

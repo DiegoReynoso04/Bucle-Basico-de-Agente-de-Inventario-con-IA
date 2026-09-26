@@ -1,7 +1,4 @@
-"""Configuración de la aplicación.
-
-Por ahora solo resuelve la ubicación del CSV de inventario.
-"""
+"""Configuración de la aplicación: ubicación del CSV de inventario y clave de Groq."""
 
 import os
 from dataclasses import dataclass
@@ -13,11 +10,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INVENTORY_CSV_PATH = PROJECT_ROOT / "data" / "inventory.csv"
 
 INVENTORY_CSV_PATH_VAR = "INVENTORY_CSV_PATH"
+GROQ_API_KEY_VAR = "GROQ_API_KEY"
 
 
 @dataclass(frozen=True)
 class Settings:
     inventory_csv_path: Path
+    # Solo la necesita el agente; None si no está definida.
+    groq_api_key: str | None
 
 
 def get_settings() -> Settings:
@@ -31,9 +31,11 @@ def get_settings() -> Settings:
 
     raw_path = os.getenv(INVENTORY_CSV_PATH_VAR, "").strip()
     if not raw_path:
-        return Settings(inventory_csv_path=DEFAULT_INVENTORY_CSV_PATH)
+        path = DEFAULT_INVENTORY_CSV_PATH
+    else:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
 
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    return Settings(inventory_csv_path=path)
+    groq_api_key = os.getenv(GROQ_API_KEY_VAR, "").strip() or None
+    return Settings(inventory_csv_path=path, groq_api_key=groq_api_key)
