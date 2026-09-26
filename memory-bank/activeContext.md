@@ -2,9 +2,9 @@
 
 ## Trabajo actual
 
-Fase 6 (bucle del agente + CLI): **implementada y probada**, pendiente de revisión del usuario y de commit.
+Fase 7 (E2E + pruebas reales con Groq): **implementada y probada**, pendiente de revisión del usuario y de commit.
 
-La Fase 7 no ha comenzado y solo comenzará cuando el usuario lo indique.
+La Fase 8 no ha comenzado y solo comenzará cuando el usuario lo indique.
 
 ## Estado de las fases
 
@@ -13,11 +13,19 @@ La Fase 7 no ha comenzado y solo comenzará cuando el usuario lo indique.
 * Fase 3 (cliente HTTP + herramientas): completada, commit `00cbe7d`.
 * Fase 4 (registro de conversaciones): completada, commit `1859428`.
 * Fase 5 (integración con Groq): completada, commit `35b4076`.
-* Fase 6 (bucle del agente + CLI): implementada y probada; pendiente de commit.
-* Fases 7 y 8 (E2E, limpieza final): pendientes.
+* Fase 6 (bucle del agente + CLI): completada, commit `ee3a918`.
+* Fase 7 (E2E + pruebas reales): implementada y probada; pendiente de commit.
+* Fase 8 (limpieza final + README + revisión): pendiente.
 * `data/conversation_log.csv` todavía no existe: se creará con el primer mensaje en una sesión real de `python agent.py`.
 
-Rama de trabajo: `fase-1-base-persistencia`, sincronizada con GitHub (`origin`) hasta la Fase 5.
+Rama de trabajo: `fase-1-base-persistencia`, sincronizada con GitHub (`origin`) hasta la Fase 6.
+
+## Hecho recientemente (Fase 7)
+
+* Solo tests; sin cambios en el código de producción ni dependencias nuevas.
+* `tests/test_agent.py`: F6, la CLI completa con `FakeLLM` contra la API servida por Uvicorn en un hilo (HTTP real) sobre una copia del inventario, con el CSV y el log comprobados en disco.
+* `tests/test_live_groq.py`: F1–F5 con Groq real sobre una copia del inventario inicial real (entrada, venta con nombre aproximado, stock bajo, producto inexistente y stock insuficiente). Comprueban efectos, no el texto exacto.
+* Suite normal: **221 passed, 7 skipped**. Pruebas reales: las 7 pasan. F5 tuvo que repetirse a mano por un límite `HTTP 429` de Groq al lanzar las 7 seguidas.
 
 ## Entorno
 
@@ -58,9 +66,10 @@ Para usar el agente:
 
 ## Cuestiones abiertas
 
-* Revisión de la Fase 6 y commit (no se hace sin indicación del usuario).
+* Revisión de la Fase 7 y commit (no se hace sin indicación del usuario).
+* Pendiente para la Fase 8: decidir si se hace una sesión manual real (`uvicorn` + `python agent.py`) para generar un `data/conversation_log.csv` de ejemplo. Esa sesión modificaría el `data/inventory.csv` real.
 * La CLI etiqueta al asistente como "Carla:" y al usuario como "Tú:", según el ejemplo del usuario. En el resto del proyecto, Carla es la usuaria.
 
 ## Siguiente paso
 
-Revisión y commit de la Fase 6 por parte del usuario. Después, la Fase 7 (E2E + pruebas reales con Groq) cuando el usuario lo indique.
+Revisión y commit de la Fase 7 por parte del usuario. Después, la Fase 8 (limpieza final + README + revisión) cuando el usuario lo indique.

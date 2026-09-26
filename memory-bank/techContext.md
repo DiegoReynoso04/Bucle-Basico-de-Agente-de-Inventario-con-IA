@@ -515,6 +515,9 @@ Actualización (Fase 3):
 Actualización (Fase 5):
 
 * `LLMClient` se prueba con respuestas de Groq simuladas mediante `httpx2.MockTransport`. Una fixture `autouse` en `test_llm.py` hace fallar cualquier conexión real (`httpx2.HTTPTransport.handle_request`), así que la suite normal no llega a Internet ni consume tokens.
+* Actualización (Fase 7):
+  * `tests/test_live_groq.py` incluye además los flujos F1–F5 del agente completo con el modelo real, sobre una copia del inventario inicial real. Comprueban efectos (CSV en disco y herramientas del log), no el texto exacto.
+  * `tests/test_agent.py` incluye F6: `main()` contra la API servida por Uvicorn en un hilo (HTTP real, puerto asignado por el sistema), con `FakeLLM`.
 * `tests/test_live_groq.py` hace dos llamadas reales (texto y tool call) y está separado de la suite normal. Se omite salvo que se ejecute explícitamente con `GROQ_LIVE=1` (`$env:GROQ_LIVE = "1"; pytest tests/test_live_groq.py`). Usa `GROQ_API_KEY` de `.env` y no la muestra.
 
 ## Dependencias

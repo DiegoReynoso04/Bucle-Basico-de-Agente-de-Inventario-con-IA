@@ -10,8 +10,8 @@
 | 3 | Cliente HTTP de la API + herramientas | ninguna (`httpx2` pasa de desarrollo a ejecución) | **Completada** (commit `00cbe7d`) |
 | 4 | Conversation log (se crea `data/conversation_log.csv`) | ninguna | **Completada** (commit `1859428`) |
 | 5 | Integración con Groq (API HTTP directa con `httpx2`, sin SDK) | ninguna | **Completada** (commit `35b4076`) |
-| 6 | Bucle del agente + CLI | ninguna | **Implementada y probada**; pendiente de revisión del usuario y de commit |
-| 7 | E2E + pruebas reales con Groq | — | Pendiente |
+| 6 | Bucle del agente + CLI | ninguna | **Completada** (commit `ee3a918`) |
+| 7 | E2E + pruebas reales con Groq | ninguna | **Implementada y probada**; pendiente de revisión del usuario y de commit |
 | 8 | Limpieza final + README + revisión | — | Pendiente |
 
 Orden de fases aprobado. Cada fase incluye sus propias pruebas y no se avanza a la siguiente sin indicación del usuario.
@@ -274,15 +274,49 @@ Verificaciones adicionales:
 * `.env` sin versionar; ninguna clave real en archivos versionables.
 * Dependencias sin cambios; ni `groq`, ni `openai`, ni frameworks de agentes instalados.
 
+## Fase 7: resultado
+
+Diseño revisado y aprobado por el usuario antes de implementar. No hay archivos nuevos, dependencias nuevas ni cambios en el código de producción.
+
+Archivos modificados:
+
+* `tests/test_agent.py`: fixture `http_api_server` (Uvicorn real en un hilo, puerto asignado por el sistema, sobre una copia de `data/inventory.csv`) y el test F6.
+* `tests/test_live_groq.py`:
+  * F1–F5 con el modelo real sobre una copia del inventario inicial real, con la API en `TestClient`.
+  * Fixture `real_inventory` y funciones `run_turn` y `quantities`, que usan los 5 flujos.
+  * Sustituye el test del agente con `sample_products` de la Fase 6, que ahora es F3.
+
+Flujos cubiertos:
+
+| # | Flujo | Tipo | Qué se comprueba |
+|---|---|---|---|
+| F1 | "Acaban de llegar 30 unidades de leche de avena." | Groq real | CSV en disco: Leche de avena +30 y el resto igual; `add_stock` con resultado |
+| F2 | "Vendimos 12 bolsas de arábica hoy." | Groq real | CSV: Café arábica −12 y el resto igual; `remove_stock` con resultado. No se exige una secuencia de herramientas |
+| F3 | "¿Qué productos están por agotarse?" | Groq real | La respuesta menciona avena, tapas y vainilla (inventario inicial real); se usó `get_low_stock` o `list_products`; CSV intacto |
+| F4 | "Acaban de llegar 10 unidades de leche de almendras." | Groq real | No se llama a `create_product`; CSV intacto |
+| F5 | "Vendimos 50 bolsas de café arábica." (hay 40) | Groq real | No se vende más de lo disponible y la decisión se basa en datos reales. Hay dos caminos válidos: el modelo consulta el stock (`list_products`) y se niega, o intenta `remove_stock` y recibe `InsufficientStock` de la API real. Es obligatorio que use al menos una de esas dos herramientas y que el CSV no cambie. En las ejecuciones observadas el modelo siempre consultó `list_products` y se negó, sin llamar a `remove_stock`. El camino técnico `remove_stock` → `InsufficientStock` → modelo lo cubre de forma determinista `test_agent.py::test_tool_error_is_sent_to_the_model` |
+| F6 | CLI completa: `main()` → `INVENTORY_API_URL` → HTTP real → Uvicorn → CSV | `FakeLLM` | Salida de la CLI, resultado del servidor recibido por el modelo, CSV en disco (leído con un repositorio nuevo), filas del log `user` → `tool` → `agent` y una sola cabecera |
+
+En las pruebas reales no se compara el texto de la respuesta. Solo se exige que sea una respuesta final real (no vacía, distinta de `LIMIT_REPLY` y sin error del modelo), salvo las palabras clave de F3.
+
+## Pruebas realizadas (Fase 7)
+
+* `pytest` y `python -m pytest` → **221 passed, 7 skipped** (220 anteriores + F6; los 7 omitidos son las pruebas reales).
+* `GROQ_LIVE=1 pytest tests/test_live_groq.py` → **6 passed, 1 failed** en la primera ejecución:
+  * F5 falló con `Groq rechazó la petición (HTTP 429, rate_limit_exceeded)`: las 7 pruebas se lanzaron seguidas y superaron el límite por minuto del plan de Groq. No es un fallo del agente, que gestionó el `LLMError` con un mensaje seguro y sin traceback.
+  * Al repetir F5 a mano pasado un minuto: **1 passed**. No se añadieron reintentos al código.
+* `data/inventory.csv`: mismo hash antes y después de todas las ejecuciones. `data/conversation_log.csv` no se crea.
+
 ## Problemas conocidos
 
 * `data/inventory.csv` se escribe con fin de línea `\n`. Con `core.autocrlf=true`, Git puede avisar de la conversión a CRLF; la lectura acepta ambos formatos.
 * `openai/gpt-oss-120b` puede enviar argumentos inesperados (por ejemplo `{"": {}}` para una herramienta sin parámetros).
   * En la Fase 6, `run_tool` los rechaza con `InvalidArguments` y el system prompt indica que las herramientas sin parámetros se llaman con `{}`.
-  * Si el modelo insistiera, el bucle acabaría en `MAX_STEPS`. La prueba real del agente pasó, pero no muestra si el modelo necesitó reintentar.
+  * Si el modelo insistiera, el bucle acabaría en `MAX_STEPS`. Las pruebas reales del agente de la Fase 7 (F1–F5) terminaron con una respuesta final, sin llegar al límite.
+* Las pruebas reales pueden fallar por el límite por minuto de Groq (`HTTP 429, rate_limit_exceeded`) si se ejecutan muchas seguidas. Conviene repetir la que falle pasado un minuto. No se reintenta automáticamente.
 * Para usar el agente, la API debe estar arrancada en otra terminal (`uvicorn inventory_app.api:app`). Si no lo está, las herramientas devuelven "No se puede conectar con la API de inventario" y el modelo se lo explica al usuario.
 * `LLMClient` crea un `httpx2.Client` que no se cierra explícitamente. Para una sesión de terminal no es un problema.
-* La URL base de la API todavía no se puede configurar: no hay ninguna variable para ella. Queda pendiente para la integración del agente.
+* La URL base de la API se configura desde la Fase 6 con `INVENTORY_API_URL` (entorno o `.env`), con valor por defecto `http://127.0.0.1:8000`. Debe coincidir con la dirección en la que se arranca Uvicorn.
 * Si un CSV editado a mano contiene un nombre que incumple las nuevas reglas (por ejemplo, con `/`), la carga falla con `StorageError` (500 en la API). Es intencionado: se prefiere un error explícito a un producto al que no se puede acceder.
 * `data/conversation_log.csv` se versionará y el agente le añadirá filas en cada ejecución, así que cada sesión real generará cambios en Git. Es una consecuencia aceptada.
 * `server.py` ejecuta un servidor Flask al importarse y Flask no está instalado; no se usa en el proyecto (revisión en la Fase 8).

@@ -9,14 +9,26 @@ escribe en un archivo temporal.
 import copy
 import csv
 import json
+import shutil
+import threading
+import time
 
 import pytest
+import uvicorn
 
 import agent
+from inventory_app.api import create_app
 from inventory_app.api_client import InventoryApiClient
-from inventory_app.config import DEFAULT_INVENTORY_API_URL, INVENTORY_API_URL_VAR, get_settings
+from inventory_app.config import (
+    DEFAULT_INVENTORY_API_URL,
+    DEFAULT_INVENTORY_CSV_PATH,
+    INVENTORY_API_URL_VAR,
+    get_settings,
+)
 from inventory_app.conversation_log import ConversationLogger
 from inventory_app.llm import LLMError
+from inventory_app.repository import CsvInventoryRepository
+from inventory_app.service import InventoryService
 
 
 class FakeLLM:
@@ -263,6 +275,68 @@ def test_cli_stops_when_log_cannot_be_written(monkeypatch, capsys, tmp_path):
     assert "no se puede escribir el registro de conversaciones" in out
     assert str(tmp_path) not in out  # sin rutas internas
     assert bad_log.read_text(encoding="utf-8") == "otra,cabecera\n"
+
+
+@pytest.fixture
+def http_api_server(tmp_path):
+    """API real servida por Uvicorn en un hilo, sobre una copia del inventario inicial.
+
+    Devuelve (url, ruta_de_la_copia). El puerto lo asigna el sistema (port=0).
+    """
+    csv_copy = tmp_path / "inventory.csv"
+    shutil.copyfile(DEFAULT_INVENTORY_CSV_PATH, csv_copy)
+    app = create_app(InventoryService(CsvInventoryRepository(csv_copy)))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if not thread.is_alive() or time.monotonic() > deadline:
+            raise RuntimeError("El servidor Uvicorn de prueba no arrancó")
+        time.sleep(0.01)
+    port = server.servers[0].sockets[0].getsockname()[1]
+
+    yield f"http://127.0.0.1:{port}", csv_copy
+
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+def test_cli_end_to_end_with_real_http_server(monkeypatch, capsys, tmp_path, http_api_server):
+    # El programa tal como se ejecuta: main() → INVENTORY_API_URL → HTTP real → Uvicorn →
+    # servicio → CSV en disco, con el registro de la conversación. Solo el modelo es falso.
+    url, csv_path = http_api_server
+    log_path = tmp_path / "conversation_log.csv"
+    original = {p.name: p.quantity for p in CsvInventoryRepository(csv_path).load()}
+    llm = FakeLLM(
+        tool_call("add_stock", {"name": "Leche de avena", "quantity": 30}),
+        text("Registradas 30 unidades de leche de avena: ahora hay 42."),
+    )
+    monkeypatch.setattr(agent, "LLMClient", lambda api_key: llm)
+    monkeypatch.setattr(agent, "LOG_PATH", log_path)
+    monkeypatch.setenv(INVENTORY_API_URL_VAR, url)
+    monkeypatch.setenv("GROQ_API_KEY", "clave-falsa")
+    user_inputs = iter(["Acaban de llegar 30 unidades de leche de avena", "salir"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(user_inputs))
+
+    assert agent.main() == 0
+
+    # Salida de la CLI.
+    assert "Carla: Registradas 30 unidades de leche de avena: ahora hay 42." in capsys.readouterr().out
+    # El modelo recibió lo que respondió el servidor por HTTP.
+    assert tool_result(llm.calls[1]["messages"][-1])["result"]["quantity"] == 42
+    # Persistencia real: el archivo en disco, leído con un repositorio nuevo.
+    saved = {p.name: p.quantity for p in CsvInventoryRepository(csv_path).load()}
+    assert saved == {**original, "Leche de avena": original["Leche de avena"] + 30}
+    # Registro de la conversación.
+    rows = log_rows(log_path)
+    assert [row["actor"] for row in rows] == ["user", "tool", "agent"]
+    assert json.loads(rows[1]["tool_call"]) == {
+        "name": "add_stock",
+        "arguments": {"name": "Leche de avena", "quantity": 30},
+    }
+    assert log_path.read_text(encoding="utf-8").count("actor,message,tool_call,timestamp") == 1
 
 
 def test_inventory_api_url_setting(monkeypatch):
